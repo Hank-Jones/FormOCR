@@ -92,6 +92,7 @@ export default function ProcessPage() {
   const { job, uploading, trackJob, cancelJob, cancelling } = useActiveJob();
   const [formTypes, setFormTypes] = useState<FormType[]>([]);
   const [formTypeId, setFormTypeId] = useState<string>("");
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [batchForms, setBatchForms] = useState<FormRecord[]>([]);
   const [resultsError, setResultsError] = useState("");
   const [error, setError] = useState("");
@@ -270,6 +271,13 @@ export default function ProcessPage() {
 
   const publishedTypes = formTypes.filter((t) => t.status === "published");
   const canProcess = Boolean(formTypeId) && !isActive;
+  const canStartProcess = canProcess && selectedFiles.length > 0;
+  const selectedFileSummary =
+    selectedFiles.length === 1
+      ? t("process.selectedFile", { name: selectedFiles[0].name })
+      : selectedFiles.length > 1
+        ? t("process.selectedFiles", { count: selectedFiles.length })
+        : "";
 
   const processFiles = async (files: File[]) => {
     if (files.length === 0) return;
@@ -291,6 +299,7 @@ export default function ProcessPage() {
     params.set("use_ai", "false");
     try {
       const j = await apiUpload<Job>(`/process/batch?${params}`, fd);
+      setSelectedFiles([]);
       trackJob(j);
     } catch (e) {
       setError(String(e));
@@ -335,7 +344,10 @@ export default function ProcessPage() {
               disabled={!canProcess}
               onChange={(e) => {
                 const f = e.target.files?.[0];
-                if (f) processFiles([f]);
+                if (f) {
+                  setError("");
+                  setSelectedFiles([f]);
+                }
                 e.target.value = "";
               }}
             />
@@ -349,11 +361,25 @@ export default function ProcessPage() {
               hidden
               disabled={!canProcess}
               onChange={(e) => {
-                if (e.target.files?.length) processFiles(Array.from(e.target.files));
+                if (e.target.files?.length) {
+                  setError("");
+                  setSelectedFiles(Array.from(e.target.files));
+                }
                 e.target.value = "";
               }}
             />
           </label>
+          
+          {selectedFiles.length > 0 && !isActive && (
+            <button
+              type="button"
+              className="btn btn-lg"
+              disabled={!canStartProcess}
+              onClick={() => void processFiles(selectedFiles)}
+            >
+              {t("process.startProcess")}
+            </button>
+          )}
         </div>
       </div>
 
