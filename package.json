@@ -1,0 +1,21 @@
+{
+  "name": "formocr",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "powershell -ExecutionPolicy Bypass -File ./scripts/dev.ps1",
+    "stop:api": "powershell -ExecutionPolicy Bypass -File ./scripts/stop-formocr-api.ps1",
+    "setup": "powershell -ExecutionPolicy Bypass -File ./scripts/setup-offline.ps1",
+    "populate:assets": "powershell -ExecutionPolicy Bypass -File ./scripts/populate-assets.ps1",
+    "populate:assets:force": "powershell -ExecutionPolicy Bypass -File ./scripts/populate-assets.ps1 -Force",
+    "build:installer": "powershell -ExecutionPolicy Bypass -File ./scripts/build-offline-installer.ps1",
+    "refresh:offline-api": "powershell -ExecutionPolicy Bypass -File ./scripts/refresh-offline-api.ps1",
+    "patch:installed-api": "powershell -ExecutionPolicy Bypass -File ./scripts/patch-installed-api.ps1",
+    "patch:ollama-models": "powershell -ExecutionPolicy Bypass -File ./scripts/patch-ollama-models.ps1",
+    "install:offline": "powershell -ExecutionPolicy Bypass -File ./dist/FormOCR-Offline/install-formocr.ps1 -SourceDir ./dist/FormOCR-Offline/app",
+    "prepare:installer": "powershell -ExecutionPolicy Bypass -File ./scripts/prepare-installer-assets.ps1",
+    "test:pipeline": "powershell -ExecutionPolicy Bypass -File ./scripts/test-pipeline.ps1",
+    "tauri": "npm run tauri --prefix apps/desktop",
+    "tauri:dev": "npm run tauri dev --prefix apps/desktop"
+  }
+}

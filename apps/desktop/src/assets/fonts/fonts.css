@@ -1,0 +1,16 @@
+/* PRK P Gothic — bundled for Vite/Tauri (same as POS client). */
+@font-face {
+  font-family: "PRK P Gothic";
+  src: url("./PRKPGBG.ttf") format("truetype");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "FormOCR PRK Gothic";
+  src: url("./PRKPGBG.ttf") format("truetype");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
