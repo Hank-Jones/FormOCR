@@ -8,7 +8,7 @@ import {
 } from "../api/client";
 
 import ImageLightbox from "./ImageLightbox";
-import { useI18n } from "../i18n/context";
+import { useI18n } from "../i18n/useI18n";
 import { displayFields } from "../utils/formFields";
 
 type CropTile = {

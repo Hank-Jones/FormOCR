@@ -9,7 +9,7 @@ from app.services.history_clear import CLEAR_HISTORY_FORBIDDEN, clear_processing
 from app.services.ocr import reset_ocr
 
 router = APIRouter(prefix="/settings", tags=["settings"])
-_SUPPORTED_OCR_LANGS = {"ch", "en", "ko"}
+_SUPPORTED_OCR_LANGS = {"ch", "en"}
 
 
 class SettingsOut(BaseModel):
@@ -52,6 +52,11 @@ def _get_nonempty_setting(db: Session, key: str, default: str) -> str:
     return value or default
 
 
+def _normalize_ocr_lang(raw: str) -> str:
+    lang = raw.strip().lower()
+    return lang if lang in _SUPPORTED_OCR_LANGS else "ch"
+
+
 def _set_setting(db: Session, key: str, value: str) -> None:
     row = db.query(AppSettings).filter(AppSettings.key == key).first()
     if row:
@@ -63,7 +68,7 @@ def _set_setting(db: Session, key: str, value: str) -> None:
 @router.get("", response_model=SettingsOut)
 def get_settings(db: Session = Depends(get_db)):
     ai = _get_setting(db, "ai_correction_enabled", str(settings.ai_correction_enabled))
-    ocr_lang = _get_setting(db, "ocr_lang", settings.ocr_lang)
+    ocr_lang = _normalize_ocr_lang(_get_setting(db, "ocr_lang", settings.ocr_lang))
     hw_enabled = _get_setting(
         db, "handwriting_ocr_enabled", str(settings.handwriting_ocr_enabled)
     )

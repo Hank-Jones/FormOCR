@@ -6,16 +6,27 @@ from collections.abc import Iterable, Iterator
 from datetime import datetime
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
 from openpyxl import Workbook
 from pydantic import BaseModel, Field
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.db.models import Form
 from app.db.session import SessionLocal, get_db
 
 router = APIRouter(prefix="/export", tags=["export"])
+
+_META_KEYS = ["form_id", "form_type", "status", "created"]
+_EXPORT_STATUSES = {
+    "approved",
+    "cancelled",
+    "needs_type",
+    "no_template",
+    "pending",
+    "processing",
+    "rejected",
+}
 
 
 class CustomExportPayload(BaseModel):
@@ -97,7 +108,7 @@ def _query_rows(
     form_type_id: int | None,
     review_status: str | None,
 ) -> Iterator[dict[str, Any]]:
-    forms = _forms_query(db, form_type_id, review_status, None).yield_per(200)
+    forms = _query_forms(db, form_type_id, review_status, None).yield_per(200)
     yield from _iter_rows(forms)
 
 
@@ -173,6 +184,11 @@ def _custom_columns(rows: list[dict[str, Any]], requested: list[str]) -> list[st
     return keys
 
 
+def _columns(rows: list[dict[str, Any]]) -> list[str]:
+    keys, _ = _ordered_keys_and_count(rows)
+    return keys
+
+
 def _json_rows(rows: list[dict[str, Any]], keys: list[str]) -> list[dict[str, Any]]:
     return [{key: row.get(key, "") for key in keys} for row in rows]
 
@@ -218,7 +234,7 @@ def export_json(
 ):
     forms = _query_forms(db, form_type_id, review_status, None)
     rows = [_row_data(f) for f in forms]
-    keys = _columns(rows, columns)
+    keys = _columns(rows)
     return _json_rows(rows, keys)
 
 
@@ -230,7 +246,7 @@ def export_csv(
 ):
     forms = _query_forms(db, form_type_id, review_status, None)
     rows = [_row_data(f) for f in forms]
-    keys = _columns(rows, columns)
+    keys = _columns(rows)
     return _csv_response(rows, keys)
 
 
@@ -242,7 +258,7 @@ def export_xlsx(
 ):
     forms = _query_forms(db, form_type_id, review_status, None)
     rows = [_row_data(f) for f in forms]
-    keys = _columns(rows, columns)
+    keys = _columns(rows)
     return _xlsx_response(rows, keys)
 
 

@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import PageHeader from "../components/PageHeader";
 import { apiFetch } from "../api/client";
 import { usePendingReview } from "../context/PendingReviewContext";
-import { useI18n, type Locale } from "../i18n/context";
+import type { Locale } from "../i18n/context";
+import { useI18n } from "../i18n/useI18n";
 
 interface Settings {
   ai_correction_enabled: boolean;
@@ -176,7 +177,6 @@ export default function SettingsPage() {
           <label>{t("settings.uiLanguage")}</label>
           <select value={locale} onChange={(e) => setLocale(e.target.value as Locale)}>
             <option value="en">{t("settings.lang.en")}</option>
-            <option value="ko">{t("settings.lang.ko")}</option>
             <option value="zh">{t("settings.lang.zh")}</option>
           </select>
         </div>
@@ -193,7 +193,6 @@ export default function SettingsPage() {
             </option>
             <option value="en">{t("settings.ocrLang.en")}</option>
             <option value="ch">{t("settings.ocrLang.ch")}</option>
-            <option value="ko">{t("settings.ocrLang.ko")}</option>
           </select>
         </div>
 

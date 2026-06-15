@@ -129,7 +129,6 @@ async function saveBlob(
     if (dest === null) {
       return null;
     }
-    const blob = await fetchExportBlob(format, params);
     const bytes = new Uint8Array(await blob.arrayBuffer());
     try {
       await writeFile(dest, bytes);
@@ -141,7 +140,6 @@ async function saveBlob(
     return dest;
   }
 
-  const blob = await fetchExportBlob(format, params);
   triggerBrowserDownload(blob, defaultFilename);
   return defaultFilename;
 }

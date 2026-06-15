@@ -9,6 +9,8 @@ assets/api-server/**
 !assets/README.md
 !assets/manifest.json
 .venv/
+apps/api/venv/
+apps/api/venv-dev312/
 __pycache__/
 *.pyc
 *.pyo

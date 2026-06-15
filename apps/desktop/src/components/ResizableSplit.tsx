@@ -5,7 +5,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { useI18n } from "../i18n/context";
+import { useI18n } from "../i18n/useI18n";
 
 type ResizableSplitProps = {
   left: ReactNode;

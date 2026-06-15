@@ -1,5 +1,5 @@
 import type { Health } from "../api/client";
-import { useI18n } from "../i18n/context";
+import { useI18n } from "../i18n/useI18n";
 import { StatusChipRow, type ChipState, type StatusChipItem } from "./StatusChips";
 
 function modelShortName(model?: string | null): string {

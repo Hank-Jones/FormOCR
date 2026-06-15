@@ -11,7 +11,7 @@ import {
   IconReview,
   IconSettings,
 } from "./components/icons";
-import { useI18n } from "./i18n/context";
+import { useI18n } from "./i18n/useI18n";
 import Dashboard from "./pages/Dashboard";
 import FormTypesPage from "./pages/FormTypes";
 import TemplateBuilder from "./pages/TemplateBuilder";
@@ -127,11 +127,11 @@ function AppShell() {
   ];
 
   const navSetup = [
-    { to: "/form-types", labelKey: "nav.formTypes", Icon: IconFormTypes },
+    { to: "/export", labelKey: "nav.export", Icon: IconExport },
   ];
 
   const navSystem = [
-    { to: "/export", labelKey: "nav.export", Icon: IconExport },
+    { to: "/form-types", labelKey: "nav.formTypes", Icon: IconFormTypes },
     { to: "/settings", labelKey: "nav.settings", Icon: IconSettings },
   ];
 

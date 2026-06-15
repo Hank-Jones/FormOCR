@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import PageHeader from "../components/PageHeader";
 import { apiFetch, type FormType } from "../api/client";
-import { useI18n } from "../i18n/context";
+import { useI18n } from "../i18n/useI18n";
 
 const MAX_FORM_TYPE_NAME = 128;
 

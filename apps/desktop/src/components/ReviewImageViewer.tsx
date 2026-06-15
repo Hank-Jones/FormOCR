@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useI18n } from "../i18n/context";
+import { useI18n } from "../i18n/useI18n";
 
 const ZOOM_MIN = 0.35;
 const ZOOM_MAX = 2.5;

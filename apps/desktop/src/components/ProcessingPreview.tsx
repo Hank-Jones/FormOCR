@@ -8,7 +8,7 @@ import {
   type FormRecord,
   type Job,
 } from "../api/client";
-import { useI18n } from "../i18n/context";
+import { useI18n } from "../i18n/useI18n";
 
 import FieldCropsGrid from "./FieldCropsGrid";
 

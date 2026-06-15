@@ -11,7 +11,7 @@ import {
 } from "../api/client";
 import FieldCanvas from "../components/FieldCanvas";
 import PageHeader from "../components/PageHeader";
-import { useI18n } from "../i18n/context";
+import { useI18n } from "../i18n/useI18n";
 
 function prepareFieldsForSave(
   fields: AnnotationField[],

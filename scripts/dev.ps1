@@ -4,7 +4,11 @@ $Root = Split-Path -Parent $PSScriptRoot
 
 $ApiDir = "$Root\apps\api"
 
-$VenvPython = "$ApiDir\venv\Scripts\python.exe"
+$VenvCandidates = @(
+    "$ApiDir\venv\Scripts\python.exe",
+    "$ApiDir\venv-dev312\Scripts\python.exe"
+)
+$VenvPython = $VenvCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
 
 if (-not (Test-Path $VenvPython)) {
 
@@ -72,6 +76,11 @@ for ($i = 0; $i -lt 60; $i++) {
         $schema = Invoke-RestMethod "http://127.0.0.1:8765/openapi.json" -TimeoutSec 2
 
         $types = $schema.components.schemas.FieldType.enum
+        $formRoute = $schema.paths.PSObject.Properties | Where-Object { $_.Name -eq "/forms/{form_id}" }
+        $formMethods = @()
+        if ($formRoute) {
+            $formMethods = @($formRoute.Value.PSObject.Properties.Name)
+        }
 
         if ($types -notcontains "gender") {
 
@@ -79,7 +88,13 @@ for ($i = 0; $i -lt 60; $i++) {
 
         }
 
-        Write-Host "API: $($h.status) | OCR: $($h.ocr_ready) | Field types: $($types.Count) (incl. gender, location)"
+        if ($formMethods -notcontains "delete") {
+
+            throw "API on 8765 is an OLD build (missing DELETE /forms/{form_id}). Stop other Python/api-server on this port."
+
+        }
+
+        Write-Host "API: $($h.status) | OCR: $($h.ocr_ready) | Field types: $($types.Count) (incl. gender, location) | Form methods: $($formMethods -join ', ')"
 
         $ok = $true
 

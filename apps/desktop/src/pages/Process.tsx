@@ -17,7 +17,7 @@ import PageHeader from "../components/PageHeader";
 import ProcessingPreview from "../components/ProcessingPreview";
 import ProgressBar, { jobProgressLabel, jobProgressPercent } from "../components/ProgressBar";
 import { useActiveJob } from "../context/ActiveJobContext";
-import { useI18n } from "../i18n/context";
+import { useI18n } from "../i18n/useI18n";
 import { displayFields } from "../utils/formFields";
 
 function toMs(iso?: string | null): number | null {
