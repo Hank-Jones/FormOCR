@@ -12,6 +12,8 @@ export type ExportSaveOptions = {
   defaultFilename: string;
 };
 
+export type ExportRow = Record<string, string | number | boolean | null | undefined>;
+
 function defaultExportFilename(format: ExportFormat): string {
   const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
   const ext = format === "json" ? "json" : format;
@@ -69,14 +71,42 @@ async function fetchExportBlob(
   return blob;
 }
 
-/** Save export via native dialog (Tauri) or browser download fallback. */
-export async function saveExport(
+async function fetchExportRowsBlob(
   format: ExportFormat,
-  params: URLSearchParams,
+  columns: readonly string[],
+  rows: readonly ExportRow[]
+): Promise<Blob> {
+  const base = await getApiBase();
+  const res = await fetch(`${base}/export/custom/${format}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ columns, rows }),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Export failed (${res.status})`);
+  }
+
+  if (format === "json") {
+    const data = await res.json();
+    return new Blob([JSON.stringify(data, null, 2)], {
+      type: "application/json;charset=utf-8",
+    });
+  }
+
+  const blob = await res.blob();
+  if (blob.size === 0 && format !== "csv") {
+    throw new Error("No data to export for the current filters.");
+  }
+  return blob;
+}
+
+async function saveBlob(
+  blob: Blob,
+  format: ExportFormat,
   opts?: Partial<ExportSaveOptions>
 ): Promise<string | null> {
   const defaultFilename = opts?.defaultFilename ?? defaultExportFilename(format);
-  const blob = await fetchExportBlob(format, params);
 
   if (isTauri()) {
     const dest = await save({
@@ -94,6 +124,27 @@ export async function saveExport(
 
   triggerBrowserDownload(blob, defaultFilename);
   return defaultFilename;
+}
+
+/** Save export via native dialog (Tauri) or browser download fallback. */
+export async function saveExport(
+  format: ExportFormat,
+  params: URLSearchParams,
+  opts?: Partial<ExportSaveOptions>
+): Promise<string | null> {
+  const blob = await fetchExportBlob(format, params);
+  return saveBlob(blob, format, opts);
+}
+
+/** Save the current export table exactly as provided by the UI. */
+export async function saveExportRows(
+  format: ExportFormat,
+  columns: readonly string[],
+  rows: readonly ExportRow[],
+  opts?: Partial<ExportSaveOptions>
+): Promise<string | null> {
+  const blob = await fetchExportRowsBlob(format, columns, rows);
+  return saveBlob(blob, format, opts);
 }
 
 /** @deprecated Use saveExport */

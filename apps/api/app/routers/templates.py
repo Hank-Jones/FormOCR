@@ -70,6 +70,7 @@ async def upload_sample(
             denoise=settings.preprocess_denoise,
             sharpen=settings.preprocess_sharpen,
             contrast=settings.preprocess_contrast,
+            high_resolution=settings.preprocess_high_resolution,
         )
         processed_str = str(processed_path)
     except Exception as exc:
@@ -221,6 +222,7 @@ def publish_template(form_type_id: int, db: Session = Depends(get_db)):
         denoise=settings.preprocess_denoise,
         sharpen=settings.preprocess_sharpen,
         contrast=settings.preprocess_contrast,
+        high_resolution=settings.preprocess_high_resolution,
     )
     proc_w, proc_h = sample_transform.dst_w, sample_transform.dst_h
     stored_w, stored_h = ref.width or 0, ref.height or 0

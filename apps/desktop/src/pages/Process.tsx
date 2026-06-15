@@ -5,11 +5,14 @@ import { Link, useLocation } from "react-router-dom";
 import {
   apiFetch,
   apiUpload,
+  type AnnotationField,
+  type FieldType,
   type FormRecord,
   type FormType,
   type Job,
 } from "../api/client";
 
+import FieldCanvas from "../components/FieldCanvas";
 import PageHeader from "../components/PageHeader";
 import ProcessingPreview from "../components/ProcessingPreview";
 import ProgressBar, { jobProgressLabel, jobProgressPercent } from "../components/ProgressBar";
@@ -85,6 +88,36 @@ function FormResultCard({ form }: { form: FormRecord }) {
   );
 }
 
+type TemplateFieldPayload = {
+  bbox_norm: [number, number, number, number] | number[];
+  field_type: FieldType;
+  label?: string | null;
+  style_key?: string | null;
+  allowed_values?: string[] | null;
+  line_count?: number | null;
+};
+
+type TemplatePayload = {
+  fields: Record<string, TemplateFieldPayload>;
+};
+
+function templateFieldsToAnnotations(template: TemplatePayload): AnnotationField[] {
+  return Object.entries(template.fields).map(([key, field]) => ({
+    key,
+    label: field.label || key,
+    field_type: field.field_type,
+    bbox_norm: [
+      Number(field.bbox_norm[0] ?? 0),
+      Number(field.bbox_norm[1] ?? 0),
+      Number(field.bbox_norm[2] ?? 0.01),
+      Number(field.bbox_norm[3] ?? 0.01),
+    ],
+    style_key: field.style_key,
+    allowed_values: field.allowed_values,
+    line_count: field.line_count,
+  }));
+}
+
 export default function ProcessPage() {
   const { t } = useI18n();
   const progressLabel = (job: Parameters<typeof jobProgressLabel>[0]) => jobProgressLabel(job, t);
@@ -97,6 +130,11 @@ export default function ProcessPage() {
   const [resultsError, setResultsError] = useState("");
   const [error, setError] = useState("");
   const [previewForm, setPreviewForm] = useState<FormRecord | null>(null);
+  const [selectedPreviewUrl, setSelectedPreviewUrl] = useState<string | null>(null);
+  const [fieldOverrides, setFieldOverrides] = useState<AnnotationField[]>([]);
+  const [selectedFieldKey, setSelectedFieldKey] = useState<string | null>(null);
+  const [fieldEditorLoading, setFieldEditorLoading] = useState(false);
+  const [fieldEditorError, setFieldEditorError] = useState("");
   const [uploadStarting, setUploadStarting] = useState(false);
   const [clockMs, setClockMs] = useState(() => Date.now());
   const uploadStartMsRef = useRef<number | null>(null);
@@ -143,6 +181,17 @@ export default function ProcessPage() {
       loadFormTypes();
     }
   }, [location.pathname, loadFormTypes]);
+
+  useEffect(() => {
+    const file = selectedFiles[0];
+    if (!file) {
+      setSelectedPreviewUrl(null);
+      return;
+    }
+    const url = URL.createObjectURL(file);
+    setSelectedPreviewUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [selectedFiles]);
 
   useEffect(() => {
     const onFocus = () => loadFormTypes();
@@ -278,6 +327,40 @@ export default function ProcessPage() {
       : selectedFiles.length > 1
         ? t("process.selectedFiles", { count: selectedFiles.length })
         : "";
+  const selectedPreviewFile = selectedFiles[0] ?? null;
+  const selectedPreviewIsImage = selectedPreviewFile?.type.startsWith("image/") ?? false;
+  const selectedPreviewIsPdf =
+    selectedPreviewFile?.type === "application/pdf" ||
+    selectedPreviewFile?.name.toLowerCase().endsWith(".pdf") ||
+    false;
+
+  useEffect(() => {
+    let stopped = false;
+    setSelectedFieldKey(null);
+    setFieldEditorError("");
+    if (!formTypeId || !selectedPreviewUrl || !selectedPreviewIsImage) {
+      setFieldOverrides([]);
+      setFieldEditorLoading(false);
+      return;
+    }
+    setFieldEditorLoading(true);
+    apiFetch<TemplatePayload>(`/templates/${formTypeId}/latest`)
+      .then((template) => {
+        if (!stopped) setFieldOverrides(templateFieldsToAnnotations(template));
+      })
+      .catch((e) => {
+        if (!stopped) {
+          setFieldOverrides([]);
+          setFieldEditorError(String(e));
+        }
+      })
+      .finally(() => {
+        if (!stopped) setFieldEditorLoading(false);
+      });
+    return () => {
+      stopped = true;
+    };
+  }, [formTypeId, selectedPreviewUrl, selectedPreviewIsImage]);
 
   const processFiles = async (files: File[]) => {
     if (files.length === 0) return;
@@ -293,6 +376,9 @@ export default function ProcessPage() {
     setUploadStarting(true);
     const fd = new FormData();
     files.forEach((f) => fd.append("files", f));
+    if (selectedPreviewIsImage && fieldOverrides.length > 0) {
+      fd.append("field_overrides", JSON.stringify({ fields: fieldOverrides }));
+    }
     const params = new URLSearchParams();
     params.set("form_type_id", formTypeId);
     params.set("auto_detect", "false");
@@ -381,6 +467,75 @@ export default function ProcessPage() {
             </button>
           )}
         </div>
+
+        {selectedFiles.length > 0 && !isActive && (
+          <div className="process-selected-preview">
+            <div className="process-selected-preview__header">
+              <strong>{t("export.preview")}</strong>
+              <span className="muted">{selectedFileSummary}</span>
+            </div>
+            {selectedPreviewUrl && selectedPreviewFile ? (
+              selectedPreviewIsImage ? (
+                <div className="process-field-editor">
+                  <div className="process-field-editor__hint">
+                    <span>
+                      Adjust field areas before processing. Drag a box to move it;
+                      hold Shift while dragging to resize.
+                    </span>
+                    {fieldEditorLoading && <span>{t("common.loading")}</span>}
+                  </div>
+                  {fieldEditorError && (
+                    <p className="alert alert-error process-field-editor__alert">
+                      {fieldEditorError}
+                    </p>
+                  )}
+                  <div className="process-field-editor__body">
+                    <FieldCanvas
+                      imageUrl={selectedPreviewUrl}
+                      fields={fieldOverrides}
+                      selectedKey={selectedFieldKey}
+                      onSelect={setSelectedFieldKey}
+                      onChange={setFieldOverrides}
+                      onAddField={(field) => setFieldOverrides((current) => [...current, field])}
+                    />
+                    <div className="process-field-editor__list">
+                      <strong>Fields</strong>
+                      {fieldOverrides.length === 0 ? (
+                        <p className="muted process-field-editor__empty">
+                          No fields loaded for this form type.
+                        </p>
+                      ) : (
+                        fieldOverrides.map((field) => (
+                          <button
+                            key={field.key}
+                            type="button"
+                            className={`process-field-editor__field${
+                              selectedFieldKey === field.key
+                                ? " process-field-editor__field--active"
+                                : ""
+                            }`}
+                            onClick={() => setSelectedFieldKey(field.key)}
+                          >
+                            <span>{field.label || field.key}</span>
+                            <small>{field.key}</small>
+                          </button>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ) : selectedPreviewIsPdf ? (
+                <iframe
+                  src={selectedPreviewUrl}
+                  title={selectedPreviewFile.name}
+                  className="process-selected-preview__pdf"
+                />
+              ) : (
+                <p className="process-selected-preview__empty">{selectedPreviewFile.name}</p>
+              )
+            ) : null}
+          </div>
+        )}
       </div>
 
       {error && <div className="alert alert-error">{error}</div>}

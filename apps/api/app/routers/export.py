@@ -2,17 +2,23 @@ import csv
 import json
 import io
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import Response, StreamingResponse
 from openpyxl import Workbook
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.db.models import Form
 from app.db.session import get_db
 
 router = APIRouter(prefix="/export", tags=["export"])
+
+
+class CustomExportPayload(BaseModel):
+    columns: list[str] = Field(default_factory=list)
+    rows: list[dict[str, Any]] = Field(default_factory=list)
 
 
 def _query_forms(
@@ -86,6 +92,57 @@ def _columns(rows: list[dict[str, Any]], columns: str | None = None) -> list[str
     return keys
 
 
+def _custom_columns(rows: list[dict[str, Any]], requested: list[str]) -> list[str]:
+    keys: list[str] = []
+    for key in requested:
+        if key and key not in keys:
+            keys.append(key)
+    if keys:
+        return keys
+    for row in rows:
+        for key in row:
+            if key not in keys:
+                keys.append(key)
+    return keys
+
+
+def _json_rows(rows: list[dict[str, Any]], keys: list[str]) -> list[dict[str, Any]]:
+    return [{key: row.get(key, "") for key in keys} for row in rows]
+
+
+def _csv_response(rows: list[dict[str, Any]], keys: list[str]) -> Response:
+    if not keys:
+        return Response(content="", media_type="text/csv")
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=keys)
+    writer.writeheader()
+    for row in rows:
+        writer.writerow({key: row.get(key, "") for key in keys})
+    return Response(
+        content=buf.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=formocr_export.csv"},
+    )
+
+
+def _xlsx_response(rows: list[dict[str, Any]], keys: list[str]) -> StreamingResponse:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Export"
+    if keys:
+        ws.append(keys)
+        for row in rows:
+            ws.append([row.get(key, "") for key in keys])
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=formocr_export.xlsx"},
+    )
+
+
 @router.get("/json")
 def export_json(
     form_type_id: int | None = None,
@@ -96,7 +153,7 @@ def export_json(
     forms = _query_forms(db, form_type_id, review_status, None)
     rows = [_row_data(f) for f in forms]
     keys = _columns(rows, columns)
-    return [{key: row.get(key, "") for key in keys} for row in rows]
+    return _json_rows(rows, keys)
 
 
 @router.get("/csv")
@@ -108,18 +165,8 @@ def export_csv(
 ):
     forms = _query_forms(db, form_type_id, review_status, None)
     rows = [_row_data(f) for f in forms]
-    if not rows:
-        return Response(content="", media_type="text/csv")
     keys = _columns(rows, columns)
-    buf = io.StringIO()
-    writer = csv.DictWriter(buf, fieldnames=keys)
-    writer.writeheader()
-    writer.writerows(rows)
-    return Response(
-        content=buf.getvalue(),
-        media_type="text/csv",
-        headers={"Content-Disposition": "attachment; filename=formocr_export.csv"},
-    )
+    return _csv_response(rows, keys)
 
 
 @router.get("/xlsx")
@@ -131,19 +178,18 @@ def export_xlsx(
 ):
     forms = _query_forms(db, form_type_id, review_status, None)
     rows = [_row_data(f) for f in forms]
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Export"
-    if rows:
-        keys = _columns(rows, columns)
-        ws.append(keys)
-        for r in rows:
-            ws.append([r.get(k, "") for k in keys])
-    buf = io.BytesIO()
-    wb.save(buf)
-    buf.seek(0)
-    return StreamingResponse(
-        buf,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": "attachment; filename=formocr_export.xlsx"},
-    )
+    keys = _columns(rows, columns)
+    return _xlsx_response(rows, keys)
+
+
+@router.post("/custom/{format}")
+def export_custom(
+    payload: CustomExportPayload,
+    format: Literal["csv", "xlsx", "json"],
+):
+    keys = _custom_columns(payload.rows, payload.columns)
+    if format == "json":
+        return _json_rows(payload.rows, keys)
+    if format == "csv":
+        return _csv_response(payload.rows, keys)
+    return _xlsx_response(payload.rows, keys)
