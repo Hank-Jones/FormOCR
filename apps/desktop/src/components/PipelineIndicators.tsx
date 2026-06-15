@@ -1,5 +1,5 @@
 import type { Health, Job } from "../api/client";
-import { useI18n } from "../i18n/context";
+import { useI18n } from "../i18n/useI18n";
 import { StatusChipRow, type ChipState, type StatusChipItem } from "./StatusChips";
 
 function mergePipeline(job: Job | null, health: Health | null): Record<string, string> {

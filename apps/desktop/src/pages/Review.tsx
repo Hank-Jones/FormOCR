@@ -10,7 +10,7 @@ import {
   type FormRecord,
 } from "../api/client";
 import { usePendingReview } from "../context/PendingReviewContext";
-import { useI18n } from "../i18n/context";
+import { useI18n } from "../i18n/useI18n";
 
 function confClass(c: number | undefined): string {
   if (c === undefined) return "";

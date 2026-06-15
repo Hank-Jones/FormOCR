@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import PageHeader from "../components/PageHeader";
 import { apiFetch, type FormRecord, type Job } from "../api/client";
-import { useI18n } from "../i18n/context";
+import { useI18n } from "../i18n/useI18n";
 
 export default function Dashboard() {
   const { t } = useI18n();

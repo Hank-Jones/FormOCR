@@ -32,8 +32,8 @@ class Settings(BaseSettings):
     handwriting_ocr_composite_single_call_max_fields: int = 40
     # Above single-call limit, split into chunks of this many fields per vision call.
     handwriting_ocr_composite_chunk_fields: int = 20
-    # PaddleOCR UI code: ch | en | ko (mapped to paddle lang in ocr.paddle_lang)
-    ocr_lang: str = "ko"
+    # PaddleOCR UI code: ch | en (mapped to paddle lang in ocr.paddle_lang)
+    ocr_lang: str = "ch"
     max_upload_mb: int = 50
     preprocess_auto_orient: bool = True
     # Heuristic orientation (without OSD) can rotate pages incorrectly.

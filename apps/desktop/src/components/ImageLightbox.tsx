@@ -2,7 +2,7 @@ import { useEffect } from "react";
 import { createPortal } from "react-dom";
 
 import ReviewImageViewer from "./ReviewImageViewer";
-import { useI18n } from "../i18n/context";
+import { useI18n } from "../i18n/useI18n";
 
 type Props = {
   src: string | null;

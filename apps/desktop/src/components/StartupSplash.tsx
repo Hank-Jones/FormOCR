@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import BrandLogo from "./BrandLogo";
 import { apiFetchHealth, apiFetchLive, type Health } from "../api/client";
-import { useI18n } from "../i18n/context";
+import { useI18n } from "../i18n/useI18n";
 
 async function getApiLogTail(): Promise<string> {
   try {

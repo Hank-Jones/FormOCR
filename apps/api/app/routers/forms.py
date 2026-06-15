@@ -6,9 +6,11 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, Response
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.db.models import Correction, Form
 from app.db.session import get_db
 from app.schemas.common import FormFieldMeta, FormOut, ReviewPayload
+from app.services.file_cleanup import collect_related_image_paths, safe_unlink_paths
 from app.services.field_crop import crop_field_from_paths, encode_crop_jpeg
 from app.services.pipeline import get_latest_template, process_form_image, rasterize_pdf, save_upload
 from app.services.template_learn import template_from_json
@@ -99,6 +101,32 @@ def get_form(form_id: int, db: Session = Depends(get_db)):
     if not form:
         raise HTTPException(404, "Form not found")
     return _form_to_out(form)
+
+
+@router.delete("/{form_id}")
+def delete_form(form_id: int, db: Session = Depends(get_db)):
+    form = db.query(Form).filter(Form.id == form_id).first()
+    if not form:
+        raise HTTPException(404, "Form not found")
+
+    images_root = settings.images_dir.resolve()
+    cleanup_paths = collect_related_image_paths(form.raw_image_path, images_root)
+    cleanup_paths.update(collect_related_image_paths(form.processed_image_path, images_root))
+
+    corrections_deleted = (
+        db.query(Correction)
+        .filter(Correction.form_id == form_id)
+        .delete(synchronize_session=False)
+    )
+    db.delete(form)
+    db.commit()
+    files_deleted = safe_unlink_paths(cleanup_paths, images_root)
+    return {
+        "ok": True,
+        "deleted_id": form_id,
+        "corrections_deleted": corrections_deleted,
+        "files_deleted": files_deleted,
+    }
 
 
 @router.get("/{form_id}/image")

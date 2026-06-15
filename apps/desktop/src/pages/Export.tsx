@@ -9,23 +9,60 @@ import {
 } from "react";
 import PageHeader from "../components/PageHeader";
 import { IconTrash } from "../components/icons";
-import { apiFetch, type FormRecord, type FormType } from "../api/client";
-import { useI18n } from "../i18n/context";
+import ReviewImageViewer from "../components/ReviewImageViewer";
+import ResizableSplit from "../components/ResizableSplit";
+import {
+  apiFetch,
+  apiImageBlobUrl,
+  type FormFieldMeta,
+  type FormRecord,
+  type FormType,
+} from "../api/client";
+import { useI18n } from "../i18n/useI18n";
 import { saveExportRows, type ExportFormat } from "../utils/exportDownload";
 import { displayFields } from "../utils/formFields";
 
 const META_COLS = ["form_id", "form_type", "status", "created"] as const;
 const EDIT_META_COLS = ["form_id"] as const;
 const DEFAULT_COLUMN_WIDTH = 160;
-const MIN_COLUMN_WIDTH = 90;
+const MIN_COLUMN_WIDTH = 30;
 const MAX_COLUMN_WIDTH = 420;
+const DEFAULT_PREVIEW_TABLE_HEIGHT = 620;
+const MIN_PREVIEW_TABLE_HEIGHT = 240;
+const MAX_PREVIEW_TABLE_HEIGHT = 900;
+const TWO_COLUMN_MIN_FIELDS = 6;
 const EXPORT_COLUMN_ORDER_STORAGE_KEY = "formocr.export.columnOrder";
 const EXPORT_COLUMN_WIDTHS_STORAGE_KEY = "formocr.export.columnWidths";
+const EXPORT_PREVIEW_TABLE_HEIGHT_STORAGE_KEY = "formocr.export.previewTableHeight";
+const EXPORT_RESULT_VIEW_MODE_STORAGE_KEY = "formocr.export.resultViewMode";
 
 type ExportRow = Record<string, string>;
 type ExportTab = "preview" | "result" | "edit";
 type ExportEdits = Record<number, Record<string, string>>;
 type SortState = { col: string; direction: "asc" | "desc" } | null;
+type ExportResultViewMode = "sections" | "review";
+
+function clamp(n: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, n));
+}
+
+function apiErrorMessage(
+  e: unknown,
+  t: (key: string, params?: Record<string, string | number>) => string
+): string {
+  const raw = String(e).replace(/^Error:\s*/, "");
+  try {
+    const parsed = JSON.parse(raw) as { detail?: unknown };
+    if (typeof parsed.detail === "string") return parsed.detail;
+  } catch {
+    // Keep raw text for non-JSON responses.
+  }
+  return raw || t("common.error");
+}
+
+function statusLabel(status: string): string {
+  return status.replace(/_/g, " ");
+}
 
 function loadExportColumnOrder(): string[] {
   try {
@@ -56,6 +93,34 @@ function loadExportColumnWidths(): Record<string, number> {
   }
 }
 
+function loadPreviewTableHeight(): number {
+  try {
+    const value = window.localStorage.getItem(EXPORT_PREVIEW_TABLE_HEIGHT_STORAGE_KEY);
+    const height = value ? Number(value) : DEFAULT_PREVIEW_TABLE_HEIGHT;
+    return Number.isFinite(height)
+      ? clamp(height, MIN_PREVIEW_TABLE_HEIGHT, MAX_PREVIEW_TABLE_HEIGHT)
+      : DEFAULT_PREVIEW_TABLE_HEIGHT;
+  } catch {
+    return DEFAULT_PREVIEW_TABLE_HEIGHT;
+  }
+}
+
+function loadExportResultViewMode(): ExportResultViewMode {
+  try {
+    const value = window.localStorage.getItem(EXPORT_RESULT_VIEW_MODE_STORAGE_KEY);
+    return value === "review" ? "review" : "sections";
+  } catch {
+    return "sections";
+  }
+}
+
+function confClass(c: number | undefined): string {
+  if (c === undefined) return "";
+  if (c >= 0.9) return "conf-high";
+  if (c >= 0.7) return "conf-mid";
+  return "conf-low";
+}
+
 function buildRows(forms: FormRecord[], typeName: (id: number | null) => string): ExportRow[] {
   return forms.map((f) => {
     const fields = displayFields(f);
@@ -70,6 +135,20 @@ function buildRows(forms: FormRecord[], typeName: (id: number | null) => string)
     }
     return row;
   });
+}
+
+function buildResultRows(
+  forms: FormRecord[],
+  edits: ExportEdits,
+  typeName: (id: number | null) => string
+): ExportRow[] {
+  return forms.map((form) => ({
+    form_id: String(form.id),
+    form_type: typeName(form.form_type_id),
+    status: form.review_status,
+    created: form.created_at || "",
+    ...(edits[form.id] ?? editableFields(form)),
+  }));
 }
 
 function fieldColumns(rows: ExportRow[]): string[] {
@@ -87,77 +166,327 @@ function fieldColumns(rows: ExportRow[]): string[] {
 const FORMATS: ExportFormat[] = ["csv", "xlsx", "json"];
 
 function ExportResultList({
+  rows,
+  fieldCols,
+  allCols,
+  columnWidths,
+  sort,
+  disabled,
+  draggedColumn,
+  selectedFormId,
+  colLabel,
+  deleteLabel,
+  onDelete,
+  onSort,
+  onResizeStart,
+  onDragStart,
+  onDragOver,
+  onDrop,
+  onDragEnd,
+  onSelect,
+}: {
+  rows: ExportRow[];
+  fieldCols: string[];
+  allCols: readonly string[];
+  columnWidths: Record<string, number>;
+  sort: SortState;
+  disabled: boolean;
+  draggedColumn: string | null;
+  selectedFormId: number | null;
+  colLabel: (col: string) => string;
+  deleteLabel: string;
+  onDelete: (formId: number) => void;
+  onSort: (col: string) => void;
+  onResizeStart: (event: ReactPointerEvent<HTMLButtonElement>, col: string) => void;
+  onDragStart: (col: string) => void;
+  onDragOver: (event: DragEvent<HTMLTableCellElement>) => void;
+  onDrop: (col: string) => void;
+  onDragEnd: () => void;
+  onSelect: (formId: number) => void;
+}) {
+  return (
+    <div className="table-wrap table-wrap--dense export-table-wrap export-result-table-wrap">
+      <table className="table--dense table--resizable export-result-table">
+        <colgroup>
+          <col className="export-edit-actions-colgroup" />
+          {allCols.map((col) => (
+            <col key={col} style={{ width: columnWidths[col] ?? DEFAULT_COLUMN_WIDTH }} />
+          ))}
+        </colgroup>
+        <thead>
+          <tr>
+            <th className="export-edit-actions-col" aria-label={deleteLabel} />
+            {allCols.map((col) => (
+              <ExportColumnHeader
+                key={col}
+                col={col}
+                width={columnWidths[col] ?? DEFAULT_COLUMN_WIDTH}
+                colLabel={colLabel}
+                sort={sort}
+                draggedColumn={draggedColumn}
+                onSort={onSort}
+                onResizeStart={onResizeStart}
+                onDragStart={onDragStart}
+                onDragOver={onDragOver}
+                onDrop={onDrop}
+                onDragEnd={onDragEnd}
+              />
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => {
+            const formId = Number(row.form_id);
+            const selected = selectedFormId === formId;
+            return (
+              <tr
+                key={row.form_id}
+                className={selected ? "export-result-row--active" : undefined}
+                tabIndex={0}
+                onClick={() => onSelect(formId)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    onSelect(formId);
+                  }
+                }}
+              >
+                <td className="export-edit-actions-cell">
+                  <button
+                    type="button"
+                    className="export-delete-icon-btn"
+                    disabled={disabled}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onDelete(formId);
+                    }}
+                    aria-label={`${deleteLabel} ${row.form_id}`}
+                    title={deleteLabel}
+                  >
+                    <IconTrash className="export-delete-icon" />
+                  </button>
+                </td>
+                {allCols.map((col) => (
+                  <td key={col} className={fieldCols.includes(col) ? "td-field" : undefined}>
+                    {col === "status" ? (
+                      <span className={`status-badge status-${row.status}`}>
+                        {statusLabel(row.status)}
+                      </span>
+                    ) : (
+                      row[col] ?? ""
+                    )}
+                  </td>
+                ))}
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function ExportResultReview({
   forms,
-  typeName,
+  selectedFormId,
   edits,
   saving,
+  deletingFormId,
+  changedCount,
   colLabel,
+  deleteLabel,
+  onSelect,
   onChange,
+  onDelete,
+  onSave,
 }: {
   forms: FormRecord[];
-  typeName: (id: number | null) => string;
+  selectedFormId: number | null;
   edits: ExportEdits;
   saving: boolean;
+  deletingFormId: number | null;
+  changedCount: number;
   colLabel: (col: string) => string;
+  deleteLabel: string;
+  onSelect: (formId: number) => void;
   onChange: (formId: number, key: string, value: string) => void;
+  onDelete: (formId: number) => void;
+  onSave: () => void | Promise<unknown>;
 }) {
   const { t } = useI18n();
+  const selectedForm = forms.find((form) => form.id === selectedFormId) ?? forms[0] ?? null;
+  const selectedId = selectedForm?.id ?? null;
+  const [imgSrc, setImgSrc] = useState("");
+  const [fieldMeta, setFieldMeta] = useState<Record<string, FormFieldMeta>>({});
+  const [selectedFieldKey, setSelectedFieldKey] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!selectedForm) {
+      setImgSrc("");
+      setFieldMeta({});
+      setSelectedFieldKey(null);
+      return;
+    }
+
+    let stopped = false;
+    let blobUrl: string | null = null;
+    setImgSrc("");
+    setFieldMeta({});
+    setSelectedFieldKey(null);
+
+    apiFetch<FormFieldMeta[]>(`/forms/${selectedForm.id}/fields`)
+      .then((meta) => {
+        if (stopped) return;
+        const map: Record<string, FormFieldMeta> = {};
+        for (const field of meta) map[field.key] = field;
+        setFieldMeta(map);
+        setSelectedFieldKey(meta.find((field) => field.bbox_norm)?.key ?? null);
+      })
+      .catch(() => {
+        if (!stopped) {
+          setFieldMeta({});
+          setSelectedFieldKey(null);
+        }
+      });
+
+    apiImageBlobUrl(`/forms/${selectedForm.id}/image?processed=false`)
+      .then((url) => {
+        if (stopped) {
+          URL.revokeObjectURL(url);
+          return;
+        }
+        blobUrl = url;
+        setImgSrc(url);
+      })
+      .catch(() => {
+        if (!stopped) setImgSrc("");
+      });
+
+    return () => {
+      stopped = true;
+      if (blobUrl) URL.revokeObjectURL(blobUrl);
+    };
+  }, [selectedForm]);
+
+  if (!selectedForm || selectedId === null) {
+    return <p className="empty-state empty-state--sm">{t("common.noMatch")}</p>;
+  }
+
+  const fields = edits[selectedId] ?? editableFields(selectedForm);
+  const keys = Object.keys(fields).sort();
+  const multiColumn = keys.length >= TWO_COLUMN_MIN_FIELDS;
 
   return (
-    <div className="export-result-grid">
-      {forms.map((form) => {
-        const fields = edits[form.id] ?? editableFields(form);
-        const entries = Object.entries(fields).sort(([a], [b]) => a.localeCompare(b));
-        return (
-          <section key={form.id} className="process-preview-pane export-result-pane">
-            <h4 className="process-preview-title export-result-title">
-              <span>{t("process.form", { id: form.id })}</span>
-              <span className={`status-badge status-${form.review_status}`}>
-                {form.review_status}
-              </span>
-            </h4>
-            <div className="export-result-meta">
-              <span>{typeName(form.form_type_id)}</span>
-              <span>{form.created_at ? new Date(form.created_at).toLocaleDateString() : "—"}</span>
-            </div>
-            {entries.length > 0 ? (
-              <div className="field-crops-grid export-result-fields">
-                {entries.map(([key, value]) => (
-                  <div key={key} className="field-crop-tile">
-                    <div className="field-crop-meta">
-                      <label htmlFor={`export-result-${form.id}-${key}`}>
-                        <strong>{key}</strong>
-                      </label>
-                    </div>
-                    {value.includes("\n") ? (
-                      <textarea
-                        id={`export-result-${form.id}-${key}`}
-                        className="export-result-field-input"
-                        rows={Math.min(6, Math.max(2, value.split("\n").length))}
-                        value={value}
-                        disabled={saving}
-                        aria-label={`${colLabel(key)} ${form.id}`}
-                        onChange={(e) => onChange(form.id, key, e.target.value)}
-                      />
-                    ) : (
-                      <input
-                        id={`export-result-${form.id}-${key}`}
-                        className="export-result-field-input"
-                        value={value}
-                        disabled={saving}
-                        aria-label={`${colLabel(key)} ${form.id}`}
-                        onChange={(e) => onChange(form.id, key, e.target.value)}
-                      />
-                    )}
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <p className="muted export-result-empty">{t("process.noFields")}</p>
-            )}
+    <div className="export-result-review">
+      <div className="export-result-review-picker-row">
+        <div className="export-result-review-picker">
+          <label htmlFor="export-result-review-form">{t("export.selectedForm")}</label>
+          <select
+            id="export-result-review-form"
+            value={selectedId}
+            onChange={(event) => onSelect(Number(event.target.value))}
+          >
+            {forms.map((form) => (
+              <option key={form.id} value={form.id}>
+                {t("process.form", { id: form.id })}
+              </option>
+            ))}
+          </select>
+        </div>
+        <button
+          type="button"
+          className="btn btn-sm btn-danger"
+          disabled={saving || deletingFormId === selectedId}
+          onClick={() => onDelete(selectedId)}
+        >
+          {deletingFormId === selectedId ? t("common.loading") : deleteLabel}
+        </button>
+      </div>
+      <ResizableSplit
+        className="export-review-split"
+        storageKey="formocr-export-review-split"
+        defaultLeftPct={55}
+        minLeftPct={32}
+        maxLeftPct={82}
+        left={
+          <section className="review-pane review-pane--image" aria-label={t("review.imagePane")}>
+            <ReviewImageViewer
+              src={imgSrc}
+              boxes={Object.values(fieldMeta)
+                .filter((field): field is FormFieldMeta & {
+                  bbox_norm: [number, number, number, number];
+                } => Array.isArray(field.bbox_norm) && field.bbox_norm.length === 4)
+                .map((field) => ({
+                  key: field.key,
+                  bbox_norm: field.bbox_norm,
+                  active: field.key === selectedFieldKey,
+                }))}
+              onSelectBox={setSelectedFieldKey}
+            />
           </section>
-        );
-      })}
+        }
+        right={
+          <section className="review-pane review-pane--fields" aria-label={t("review.fieldsPane")}>
+            <div className="review-fields-scroll">
+              <div
+                className={`review-fields-grid${multiColumn ? " review-fields-grid--two" : ""}`}
+              >
+                {keys.map((key) => {
+                  const lines = fieldMeta[key]?.line_count ?? 0;
+                  const multiline = lines >= 2 || (fields[key] ?? "").includes("\n");
+                  return (
+                    <div
+                      key={key}
+                      className={`form-group review-field-item${
+                        selectedFieldKey === key ? " review-field-item--active" : ""
+                      }`}
+                      onClick={() => setSelectedFieldKey(key)}
+                    >
+                      <label htmlFor={`export-review-field-${selectedId}-${key}`}>
+                        {colLabel(key)}
+                        {multiline && lines >= 2
+                          ? ` (${t("review.multiline", { count: lines })})`
+                          : ""}
+                      </label>
+                      {multiline ? (
+                        <textarea
+                          id={`export-review-field-${selectedId}-${key}`}
+                          className={confClass(selectedForm.confidence?.[key])}
+                          rows={Math.max(2, lines || Math.min(6, fields[key].split("\n").length))}
+                          value={fields[key] ?? ""}
+                          disabled={saving}
+                          onChange={(event) => onChange(selectedId, key, event.target.value)}
+                        />
+                      ) : (
+                        <input
+                          id={`export-review-field-${selectedId}-${key}`}
+                          className={confClass(selectedForm.confidence?.[key])}
+                          value={fields[key] ?? ""}
+                          disabled={saving}
+                          onChange={(event) => onChange(selectedId, key, event.target.value)}
+                        />
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+            <div className="review-actions toolbar export-result-review-actions">
+              <button
+                type="button"
+                className="btn"
+                disabled={saving || changedCount === 0}
+                onClick={() => void onSave()}
+              >
+                {saving ? t("export.savingEdits") : t("export.saveEdits")}
+              </button>
+              {changedCount > 0 && (
+                <span className="muted">{t("common.rows", { count: changedCount })}</span>
+              )}
+            </div>
+          </section>
+        }
+      />
     </div>
   );
 }
@@ -383,6 +712,7 @@ export default function ExportPage() {
   const [formTypeId, setFormTypeId] = useState("");
   const [reviewStatus, setReviewStatus] = useState("");
   const [format, setFormat] = useState<ExportFormat>("csv");
+  const [activeTab, setActiveTab] = useState<ExportTab>("preview");
   const [forms, setForms] = useState<FormRecord[]>([]);
   const [edits, setEdits] = useState<ExportEdits>({});
   const [deletedFormIds, setDeletedFormIds] = useState<Set<number>>(() => new Set());
@@ -390,10 +720,16 @@ export default function ExportPage() {
   const [columnWidths, setColumnWidths] = useState<Record<string, number>>(
     loadExportColumnWidths
   );
+  const [previewTableHeight, setPreviewTableHeight] = useState(loadPreviewTableHeight);
+  const [resultViewMode, setResultViewMode] =
+    useState<ExportResultViewMode>(loadExportResultViewMode);
+  const [selectedResultFormId, setSelectedResultFormId] = useState<number | null>(null);
   const [sort, setSort] = useState<SortState>(null);
   const [draggedColumn, setDraggedColumn] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [savingEdits, setSavingEdits] = useState(false);
+  const [deletingFormId, setDeletingFormId] = useState<number | null>(null);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   const resizingColumnRef = useRef<{
@@ -461,6 +797,10 @@ export default function ExportPage() {
     [forms, deletedFormIds]
   );
   const rows = useMemo(() => buildRows(exportForms, typeName), [exportForms, typeName]);
+  const resultRows = useMemo(
+    () => buildResultRows(exportForms, edits, typeName),
+    [exportForms, edits, typeName]
+  );
   const fieldCols = useMemo(() => fieldColumns(rows), [rows]);
   const baseCols = useMemo(() => [...META_COLS, ...fieldCols], [fieldCols]);
   const editBaseCols = useMemo(() => [...EDIT_META_COLS, ...fieldCols], [fieldCols]);
@@ -483,10 +823,21 @@ export default function ExportPage() {
     () => sortRows(rows, visiblePreviewSort),
     [rows, visiblePreviewSort]
   );
+  const sortedResultRows = useMemo(
+    () => sortRows(resultRows, visiblePreviewSort),
+    [resultRows, visiblePreviewSort]
+  );
   const sortedEditRows = useMemo(
     () => sortRows(editRows, visibleEditSort),
     [editRows, visibleEditSort]
   );
+
+  useEffect(() => {
+    setSelectedResultFormId((current) => {
+      if (current && exportForms.some((form) => form.id === current)) return current;
+      return exportForms[0]?.id ?? null;
+    });
+  }, [exportForms]);
 
   useEffect(() => {
     setOrderedCols((current) => {
@@ -518,6 +869,17 @@ export default function ExportPage() {
   useEffect(() => {
     window.localStorage.setItem(EXPORT_COLUMN_WIDTHS_STORAGE_KEY, JSON.stringify(columnWidths));
   }, [columnWidths]);
+
+  useEffect(() => {
+    window.localStorage.setItem(
+      EXPORT_PREVIEW_TABLE_HEIGHT_STORAGE_KEY,
+      String(previewTableHeight)
+    );
+  }, [previewTableHeight]);
+
+  useEffect(() => {
+    window.localStorage.setItem(EXPORT_RESULT_VIEW_MODE_STORAGE_KEY, resultViewMode);
+  }, [resultViewMode]);
 
   const moveColumn = (from: string, to: string) => {
     if (from === to) return;
@@ -599,6 +961,34 @@ export default function ExportPage() {
     }
   };
 
+  const deleteFormResult = async (formId: number) => {
+    if (deletingFormId !== null || savingEdits || exporting) return;
+    if (!window.confirm(t("export.deleteConfirm", { id: formId }))) return;
+
+    setDeletingFormId(formId);
+    setError("");
+    setSuccess("");
+    try {
+      await apiFetch(`/forms/${formId}`, { method: "DELETE" }, { retries: 1 });
+      setForms((current) => current.filter((form) => form.id !== formId));
+      setEdits((current) => {
+        const next = { ...current };
+        delete next[formId];
+        return next;
+      });
+      setDeletedFormIds((current) => {
+        const next = new Set(current);
+        next.delete(formId);
+        return next;
+      });
+      setSuccess(t("export.deletedResult", { id: formId }));
+    } catch (e) {
+      setError(apiErrorMessage(e, t));
+    } finally {
+      setDeletingFormId(null);
+    }
+  };
+
   const runExport = async () => {
     if (exporting) return;
     setExporting(true);
@@ -626,6 +1016,14 @@ export default function ExportPage() {
   };
 
   const changedCount = exportForms.filter((form) => hasChangedEdits(form, edits[form.id])).length;
+  const updateEdit = (formId: number, key: string, value: string) =>
+    setEdits((current) => ({
+      ...current,
+      [formId]: {
+        ...(current[formId] ?? {}),
+        [key]: value,
+      },
+    }));
 
   return (
     <div className="page page--pro page--export">
@@ -732,22 +1130,54 @@ export default function ExportPage() {
             </button>
           </div>
           <div className="tab-window-actions">
+            {activeTab === "preview" && (
+              <label className="export-height-control">
+                <span>{t("export.previewHeight")}</span>
+                <input
+                  type="range"
+                  min={MIN_PREVIEW_TABLE_HEIGHT}
+                  max={MAX_PREVIEW_TABLE_HEIGHT}
+                  step={20}
+                  value={previewTableHeight}
+                  onChange={(event) => setPreviewTableHeight(Number(event.target.value))}
+                />
+                <output>{previewTableHeight}px</output>
+              </label>
+            )}
             {activeTab === "result" && (
-              <button
-                type="button"
-                className="btn btn-sm btn-secondary"
-                disabled={savingEdits || changedCount === 0}
-                onClick={() => void saveEditedForms()}
+              <div
+                className="segmented export-view-segmented"
+                role="group"
+                aria-label={t("export.resultViewMode")}
               >
-                {savingEdits ? t("export.savingEdits") : t("export.saveEdits")}
-              </button>
+                <button
+                  type="button"
+                  className={`segmented-btn${
+                    resultViewMode === "sections" ? " segmented-btn--active" : ""
+                  }`}
+                  aria-pressed={resultViewMode === "sections"}
+                  onClick={() => setResultViewMode("sections")}
+                >
+                  {t("export.view.sections")}
+                </button>
+                <button
+                  type="button"
+                  className={`segmented-btn${
+                    resultViewMode === "review" ? " segmented-btn--active" : ""
+                  }`}
+                  aria-pressed={resultViewMode === "review"}
+                  onClick={() => setResultViewMode("review")}
+                >
+                  {t("export.view.review")}
+                </button>
+              </div>
             )}
             <span className="muted tab-window-count">
               {t("common.rows", { count: rows.length })}
             </span>
-          </h3>
+          </div>
         </div>
-        <p className="muted" style={{ marginTop: "-0.25rem", fontSize: "0.85rem" }}>
+        <p className="muted" style={{ marginLeft: "0.5rem", marginTop: "0.25rem", fontSize: "0.85rem" }}>
           {t("export.previewLimit")}
         </p>
 
@@ -763,18 +1193,12 @@ export default function ExportPage() {
             colLabel={colLabel}
             columnWidths={columnWidths}
             sort={visibleEditSort}
-            disabled={savingEdits || exporting}
+            disabled={savingEdits || exporting || deletingFormId !== null}
             draggedColumn={draggedColumn}
             deleteLabel={t("common.delete")}
             onSort={toggleSort}
             onResizeStart={startColumnResize}
-            onDelete={(formId) =>
-              setDeletedFormIds((current) => {
-                const next = new Set(current);
-                next.add(formId);
-                return next;
-              })
-            }
+            onDelete={(formId) => void deleteFormResult(formId)}
             onDragStart={setDraggedColumn}
             onDragOver={(event) => event.preventDefault()}
             onDrop={(targetCol) => {
@@ -785,25 +1209,55 @@ export default function ExportPage() {
           />
         ) : activeTab === "result" ? (
           <div className="export-result-workspace">
-            <ExportResultList
-              forms={exportForms}
-              typeName={typeName}
-              edits={edits}
-              saving={savingEdits || exporting}
-              colLabel={colLabel}
-              onChange={(formId, key, value) =>
-                setEdits((current) => ({
-                  ...current,
-                  [formId]: {
-                    ...(current[formId] ?? {}),
-                    [key]: value,
-                  },
-                }))
-              }
-            />
+            {resultViewMode === "review" ? (
+              <ExportResultReview
+                forms={exportForms}
+                selectedFormId={selectedResultFormId}
+                edits={edits}
+                saving={savingEdits || exporting || deletingFormId !== null}
+                deletingFormId={deletingFormId}
+                changedCount={changedCount}
+                colLabel={colLabel}
+                deleteLabel={t("common.delete")}
+                onSelect={setSelectedResultFormId}
+                onChange={updateEdit}
+                onDelete={(formId) => void deleteFormResult(formId)}
+                onSave={saveEditedForms}
+              />
+            ) : (
+              <ExportResultList
+                rows={sortedResultRows}
+                fieldCols={fieldCols}
+                allCols={previewCols}
+                columnWidths={columnWidths}
+                sort={visiblePreviewSort}
+                disabled={savingEdits || exporting || deletingFormId !== null}
+                draggedColumn={draggedColumn}
+                selectedFormId={selectedResultFormId}
+                colLabel={colLabel}
+                deleteLabel={t("common.delete")}
+                onDelete={(formId) => void deleteFormResult(formId)}
+                onSort={toggleSort}
+                onResizeStart={startColumnResize}
+                onDragStart={setDraggedColumn}
+                onDragOver={(event) => event.preventDefault()}
+                onDrop={(targetCol) => {
+                  if (draggedColumn) moveColumn(draggedColumn, targetCol);
+                  setDraggedColumn(null);
+                }}
+                onDragEnd={() => setDraggedColumn(null)}
+                onSelect={(formId) => {
+                  setSelectedResultFormId(formId);
+                  setResultViewMode("review");
+                }}
+              />
+            )}
           </div>
         ) : (
-          <div className="table-wrap table-wrap--dense export-table-wrap">
+          <div
+            className="table-wrap table-wrap--dense export-table-wrap"
+            style={{ maxHeight: previewTableHeight }}
+          >
             <table className="table--dense table--resizable">
               <colgroup>
                 {previewCols.map((col) => (

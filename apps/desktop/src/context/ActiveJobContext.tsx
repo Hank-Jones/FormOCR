@@ -10,7 +10,7 @@ import {
 import { useLocation } from "react-router-dom";
 
 import { apiFetch, type Job } from "../api/client";
-import { useI18n } from "../i18n/context";
+import { useI18n } from "../i18n/useI18n";
 import { notifyJobFinished } from "../utils/jobNotify";
 
 export const ACTIVE_JOB_KEY = "formocr_active_job_id";

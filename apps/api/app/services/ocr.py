@@ -63,7 +63,6 @@ def uses_qwen_only() -> bool:
 _PADDLE_LANG: dict[str, str] = {
     "ch": "ch",
     "en": "en",
-    "ko": "korean",
 }
 
 
@@ -124,12 +123,6 @@ _PP_OCRV4_MODELS: dict[str, tuple[str, str, str, str]] = {
     # lang -> det_lang, det_dir, rec_lang, rec_dir
     "ch": ("ch", "ch_PP-OCRv4_det_infer", "ch", "ch_PP-OCRv4_rec_infer"),
     "en": ("en", "en_PP-OCRv3_det_infer", "en", "en_PP-OCRv4_rec_infer"),
-    "korean": (
-        "ml",
-        "Multilingual_PP-OCRv3_det_infer",
-        "korean",
-        "korean_PP-OCRv4_rec_infer",
-    ),
 }
 _CLS_DIR = "ch_ppocr_mobile_v2.0_cls_infer"
 
@@ -298,7 +291,7 @@ def _fallback_ocr(image: np.ndarray) -> tuple[str, float]:
         import pytesseract
 
         ocr_key = (settings.ocr_lang or "ch").strip().lower()
-        lang = {"ch": "chi_sim+eng", "ko": "kor+eng"}.get(ocr_key, "eng")
+        lang = {"ch": "chi_sim+eng"}.get(ocr_key, "eng")
         text = pytesseract.image_to_string(image, lang=lang).strip()
         return text, 0.75 if text else 0.0
     except Exception:
@@ -372,22 +365,24 @@ def _encode_crop_png_b64(image: np.ndarray) -> str | None:
     return _encode_crop_b64(image, jpeg=False)
 
 
-def _handwriting_prompt_ko(*, is_date: bool) -> str:
+def _handwriting_prompt(*, is_date: bool) -> str:
+    lang = (settings.ocr_lang or "ch").strip().lower()
+    lang_hint = {"ch": "Chinese", "en": "English"}.get(lang, lang)
     if is_date:
         return (
-            "You are reading handwritten Korean form fields.\n"
+            f"You are reading handwritten {lang_hint} form fields.\n"
             "Task: Extract ONLY the handwritten date text inside the image.\n"
             "Rules:\n"
             "- Output ONLY the text, no explanation.\n"
-            "- Keep separators if present (., /, -, 년, 월, 일).\n"
+            "- Keep separators if present (., /, -, 年, 月, 日).\n"
             "- If unreadable, output an empty string.\n"
         )
     return (
-        "You are reading handwritten Korean form fields.\n"
+        f"You are reading handwritten {lang_hint} form fields.\n"
         "Task: Extract ONLY the handwritten text inside the image.\n"
         "Rules:\n"
         "- Output ONLY the text, no explanation.\n"
-        "- Keep the original script (Hangul/Hanja/Latin digits).\n"
+        "- Keep the original letters, numbers, and symbols.\n"
         "- Do not guess missing characters.\n"
         "- If unreadable, output an empty string.\n"
     )
@@ -468,7 +463,7 @@ def _handwriting_ocr_ollama(
         b64 = _encode_crop_b64(image, jpeg=True)
         if not b64:
             return "", 0.0, "empty image"
-        prompt = prompt or _handwriting_prompt_ko(is_date=is_date)
+        prompt = prompt or _handwriting_prompt(is_date=is_date)
         payload: dict[str, Any] = {
             "model": model,
             "stream": False,
@@ -620,12 +615,8 @@ def wait_for_handwriting_model(timeout_s: float = 90.0) -> tuple[bool, str]:
     """Wait until Ollama lists the handwriting model or timeout (job start)."""
     import time
 
-    if not settings.handwriting_ocr_enabled:
+    if not settings.handwriting_ocr_enabled or not uses_qwen_only():
         return True, ""
-    lang_key = (settings.ocr_lang or "ch").strip().lower()
-    if lang_key != "ko":
-        return True, ""
-
     deadline = time.time() + timeout_s
     last_msg = ""
     while time.time() < deadline:
@@ -971,8 +962,8 @@ def _vision_batch_for_crops(
         if composite.size == 0:
             return {}, "empty composite"
 
-        lang = (settings.ocr_lang or "ko").strip().lower()
-        lang_hint = {"ko": "Korean", "ch": "Chinese", "en": "English"}.get(lang, lang)
+        lang = (settings.ocr_lang or "ch").strip().lower()
+        lang_hint = {"ch": "Chinese", "en": "English"}.get(lang, lang)
         row_map = "\n".join(
             f"  Row {i + 1} → field key \"{k}\"" for i, k in enumerate(crop_keys)
         )
@@ -1168,8 +1159,8 @@ def extract_fields_qwen_page(
             f"bbox x={x:.4f} y={y:.4f} w={bw:.4f} h={bh:.4f}.{hint}"
         )
 
-    lang = (settings.ocr_lang or "ko").strip().lower()
-    lang_hint = {"ko": "Korean", "ch": "Chinese", "en": "English"}.get(lang, lang)
+    lang = (settings.ocr_lang or "ch").strip().lower()
+    lang_hint = {"ch": "Chinese", "en": "English"}.get(lang, lang)
     prompt = (
         f"You read handwritten {lang_hint} text on a form image.\n"
         "Each field has a normalized bounding box (x,y = top-left, w,h = size, 0–1).\n"
@@ -1239,7 +1230,7 @@ def prepare_date_crop(crop: np.ndarray) -> np.ndarray:
 
 
 def _paddle_ocr_crop(ocr: Any, prepared: np.ndarray, *, is_date: bool) -> tuple[str, float]:
-    use_cjk_date = (settings.ocr_lang or "ch").strip().lower() in ("ch", "ko")
+    use_cjk_date = (settings.ocr_lang or "ch").strip().lower() in ("ch",)
     if is_date and use_cjk_date:
         text, conf = _run_ocr(ocr, prepared, det=True, rec=True, sort_boxes=True)
         if _is_useful_ocr_text(text):
@@ -1280,7 +1271,7 @@ def _ocr_multiline_crop(
     if not n:
         return "", 0.0, "not multiline"
 
-    lang = (settings.ocr_lang or "ko").strip().lower()
+    lang = (settings.ocr_lang or "ch").strip().lower()
     guided = draw_line_guides(image, n)
     min_h = multiline_crop_min_height(n)
     prepared = prepare_crop_for_ocr(
@@ -1364,9 +1355,7 @@ def ocr_crop(
     tess_text = ""
     tess_conf = 0.0
 
-    use_qwen = uses_qwen_only() or (
-        settings.handwriting_ocr_enabled and lang_key == "ko"
-    )
+    use_qwen = uses_qwen_only()
 
     # Qwen / vision path
     if use_qwen:
