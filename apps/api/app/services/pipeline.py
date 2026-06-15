@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db.models import Form, FormType, Template
-from app.schemas.common import FieldExtraction, TemplatePayload
+from app.schemas.common import AnnotationField, FieldExtraction, TemplateField, TemplatePayload
 from app.services.ai_correct import (
     correct_fields,
     fields_eligible_for_ai,
@@ -105,6 +105,45 @@ def get_latest_template(db: Session, form_type_id: int) -> Template | None:
     )
 
 
+def _clamp_bbox_norm(bbox: list[float]) -> list[float]:
+    x, y, w, h = [float(v) for v in bbox[:4]]
+    x = max(0.0, min(1.0, x))
+    y = max(0.0, min(1.0, y))
+    w = max(0.01, min(1.0 - x, w))
+    h = max(0.01, min(1.0 - y, h))
+    return [x, y, w, h]
+
+
+def _apply_field_overrides(
+    payload: TemplatePayload,
+    field_overrides: list[AnnotationField],
+    *,
+    processed_w: int,
+    processed_h: int,
+    page_transform,
+) -> None:
+    override_fields: dict[str, TemplateField] = {}
+    for field in field_overrides:
+        key = field.key.strip()
+        if not key:
+            continue
+        bbox = _clamp_bbox_norm(field.bbox_norm)
+        if page_transform is not None:
+            bbox = _clamp_bbox_norm(page_transform.apply_bbox_norm(bbox))
+        override_fields[key] = TemplateField(
+            bbox_norm=[round(v, 4) for v in bbox],
+            field_type=field.field_type,
+            tolerance=0.02,
+            label=(field.label or key).strip() or key,
+            style_key=field.style_key,
+            allowed_values=field.allowed_values,
+            line_count=field.line_count,
+        )
+    if override_fields:
+        payload.fields = override_fields
+        payload.reference_size = [int(processed_w), int(processed_h)]
+
+
 async def process_form_image(
     db: Session,
     image_path: Path,
@@ -113,6 +152,7 @@ async def process_form_image(
     job_id: int | None = None,
     auto_detect: bool = True,
     use_ai: bool | None = None,
+    field_overrides: list[AnnotationField] | None = None,
 ) -> Form:
     raise_if_job_cancelled(job_id)
     if job_id is not None:
@@ -128,6 +168,7 @@ async def process_form_image(
         denoise=settings.preprocess_denoise,
         sharpen=settings.preprocess_sharpen,
         contrast=settings.preprocess_contrast,
+        high_resolution=settings.preprocess_high_resolution,
     )
     if job_id is not None:
         update_job_pipeline(job_id, preprocess="done")
@@ -218,6 +259,14 @@ async def process_form_image(
     ft_row = db.query(FormType).filter(FormType.id == detected_id).first()
     if ft_row and ft_row.field_styles_json:
         payload.field_styles = parse_field_styles(ft_row.field_styles_json)
+    if field_overrides:
+        _apply_field_overrides(
+            payload,
+            field_overrides,
+            processed_w=_pw,
+            processed_h=_ph,
+            page_transform=_page_transform,
+        )
     if working_form is not None:
         working_form.form_type_id = detected_id
         db.commit()

@@ -4,31 +4,26 @@ import json
 import tempfile
 from collections.abc import Iterable, Iterator
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from openpyxl import Workbook
-from sqlalchemy.orm import joinedload
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.db.models import Form
 from app.db.session import SessionLocal, get_db
 
 router = APIRouter(prefix="/export", tags=["export"])
-_META_KEYS = ["form_id", "form_type", "status", "created"]
-_EXPORT_STATUSES = {
-    "pending",
-    "approved",
-    "rejected",
-    "processing",
-    "needs_type",
-    "no_template",
-    "cancelled",
-}
 
 
-def _forms_query(
+class CustomExportPayload(BaseModel):
+    columns: list[str] = Field(default_factory=list)
+    rows: list[dict[str, Any]] = Field(default_factory=list)
+
+
+def _query_forms(
     db: Session,
     form_type_id: int | None,
     review_status: str | None,
@@ -164,20 +159,67 @@ def _stream_json(rows: Iterable[dict[str, Any]]) -> Iterator[str]:
     yield "]"
 
 
+def _custom_columns(rows: list[dict[str, Any]], requested: list[str]) -> list[str]:
+    keys: list[str] = []
+    for key in requested:
+        if key and key not in keys:
+            keys.append(key)
+    if keys:
+        return keys
+    for row in rows:
+        for key in row:
+            if key not in keys:
+                keys.append(key)
+    return keys
+
+
+def _json_rows(rows: list[dict[str, Any]], keys: list[str]) -> list[dict[str, Any]]:
+    return [{key: row.get(key, "") for key in keys} for row in rows]
+
+
+def _csv_response(rows: list[dict[str, Any]], keys: list[str]) -> Response:
+    if not keys:
+        return Response(content="", media_type="text/csv")
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=keys)
+    writer.writeheader()
+    for row in rows:
+        writer.writerow({key: row.get(key, "") for key in keys})
+    return Response(
+        content=buf.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=formocr_export.csv"},
+    )
+
+
+def _xlsx_response(rows: list[dict[str, Any]], keys: list[str]) -> StreamingResponse:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Export"
+    if keys:
+        ws.append(keys)
+        for row in rows:
+            ws.append([row.get(key, "") for key in keys])
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=formocr_export.xlsx"},
+    )
+
+
 @router.get("/json")
 def export_json(
     form_type_id: int | None = None,
     review_status: str | None = Query(None),
     db: Session = Depends(get_db),
 ):
-    _keys, count = _ordered_keys_and_count(_query_rows(db, form_type_id, review_status))
-    if count == 0:
-        raise HTTPException(404, "No data to export for the current filters")
-    return StreamingResponse(
-        _stream_json(_stream_query_rows(form_type_id, review_status)),
-        media_type="application/json",
-        headers={"Content-Disposition": "attachment; filename=formocr_export.json"},
-    )
+    forms = _query_forms(db, form_type_id, review_status, None)
+    rows = [_row_data(f) for f in forms]
+    keys = _columns(rows, columns)
+    return _json_rows(rows, keys)
 
 
 @router.get("/csv")
@@ -186,14 +228,10 @@ def export_csv(
     review_status: str | None = None,
     db: Session = Depends(get_db),
 ):
-    keys, count = _ordered_keys_and_count(_query_rows(db, form_type_id, review_status))
-    if count == 0:
-        raise HTTPException(404, "No data to export for the current filters")
-    return StreamingResponse(
-        _stream_csv(_stream_query_rows(form_type_id, review_status), keys),
-        media_type="text/csv",
-        headers={"Content-Disposition": "attachment; filename=formocr_export.csv"},
-    )
+    forms = _query_forms(db, form_type_id, review_status, None)
+    rows = [_row_data(f) for f in forms]
+    keys = _columns(rows, columns)
+    return _csv_response(rows, keys)
 
 
 @router.get("/xlsx")
@@ -202,19 +240,20 @@ def export_xlsx(
     review_status: str | None = None,
     db: Session = Depends(get_db),
 ):
-    keys, count = _ordered_keys_and_count(_query_rows(db, form_type_id, review_status))
-    if count == 0:
-        raise HTTPException(404, "No data to export for the current filters")
-    wb = Workbook(write_only=True)
-    ws = wb.create_sheet("Export")
-    ws.append([_spreadsheet_value(k) for k in keys])
-    for row in _query_rows(db, form_type_id, review_status):
-        ws.append([_spreadsheet_value(row.get(k, "")) for k in keys])
-    buf = tempfile.SpooledTemporaryFile(max_size=10 * 1024 * 1024)
-    wb.save(buf)
-    buf.seek(0)
-    return StreamingResponse(
-        buf,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": "attachment; filename=formocr_export.xlsx"},
-    )
+    forms = _query_forms(db, form_type_id, review_status, None)
+    rows = [_row_data(f) for f in forms]
+    keys = _columns(rows, columns)
+    return _xlsx_response(rows, keys)
+
+
+@router.post("/custom/{format}")
+def export_custom(
+    payload: CustomExportPayload,
+    format: Literal["csv", "xlsx", "json"],
+):
+    keys = _custom_columns(payload.rows, payload.columns)
+    if format == "json":
+        return _json_rows(payload.rows, keys)
+    if format == "csv":
+        return _csv_response(payload.rows, keys)
+    return _xlsx_response(payload.rows, keys)

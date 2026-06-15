@@ -40,10 +40,12 @@ class Settings(BaseSettings):
     # Keep off by default; only OSD-based orientation is always trusted.
     preprocess_auto_orient_heuristic: bool = False
     preprocess_deskew: bool = True
-    preprocess_align: bool = True
+    # Preserve the original page canvas; content cropping can cut margins/layout cues.
+    preprocess_align: bool = False
     preprocess_denoise: bool = True
     preprocess_sharpen: bool = True
     preprocess_contrast: bool = True
+    preprocess_high_resolution: bool = True
     cors_origins: list[str] = [
         "http://localhost:1420",
         "http://127.0.0.1:1420",

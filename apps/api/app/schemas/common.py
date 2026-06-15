@@ -182,6 +182,7 @@ class ProcessOptions(BaseModel):
     form_type_id: int | None = None
     use_ai: bool | None = None
     auto_detect: bool = False
+    field_overrides: list[AnnotationField] | None = None
 
 
 class DetectionResult(BaseModel):

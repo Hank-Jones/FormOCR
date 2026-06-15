@@ -1,15 +1,16 @@
+import json
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form as FastApiForm, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db.models import Form, FormType, ProcessingJob
 from app.db.session import SessionLocal, get_db
-from app.schemas.common import FormOut, JobOut, ProcessOptions
+from app.schemas.common import AnnotationsPayload, FormOut, JobOut, ProcessOptions
 from app.routers.forms import _form_to_out
 from app.services.job_cancel import JobCancelledError, raise_if_job_cancelled
 from app.services.pipeline import process_form_image, rasterize_pdf, save_upload
@@ -133,6 +134,7 @@ async def _run_job(job_id: int, paths: list[Path], options: ProcessOptions):
                     job_id=job_id,
                     auto_detect=options.auto_detect,
                     use_ai=options.use_ai,
+                    field_overrides=options.field_overrides,
                 )
                 raise_if_job_cancelled(job_id)
                 ids: list[int] = list(get_job_progress(job_id).get("form_ids") or [])
@@ -181,6 +183,7 @@ async def _run_job(job_id: int, paths: list[Path], options: ProcessOptions):
 async def batch_process(
     background_tasks: BackgroundTasks,
     files: list[UploadFile] = File(...),
+    field_overrides: str | None = FastApiForm(None),
     form_type_id: int | None = Query(None),
     auto_detect: bool = Query(False),
     use_ai: bool | None = Query(None),
@@ -196,6 +199,15 @@ async def batch_process(
             400,
             "Form type must be published. Finish the template and publish first.",
         )
+
+    parsed_field_overrides = None
+    if field_overrides:
+        try:
+            parsed_field_overrides = AnnotationsPayload.model_validate(
+                json.loads(field_overrides)
+            ).fields
+        except Exception as e:
+            raise HTTPException(400, "Invalid field override payload") from e
 
     paths: list[Path] = []
     for file in files:
@@ -223,6 +235,7 @@ async def batch_process(
         form_type_id=form_type_id,
         auto_detect=auto_detect,
         use_ai=use_ai,
+        field_overrides=parsed_field_overrides,
     )
     background_tasks.add_task(_run_job, job.id, paths, options)
     return _job_to_out(job)

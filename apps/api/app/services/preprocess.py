@@ -429,6 +429,68 @@ def _align_to_content(
 
 
 
+def _ensure_high_resolution(
+    gray: np.ndarray, *, min_long_side: int = 2200, max_long_side: int = 3600
+) -> tuple[np.ndarray, float]:
+    h, w = gray.shape[:2]
+    long_side = max(h, w)
+    if long_side <= 0 or long_side >= min_long_side:
+        return gray, 1.0
+
+    scale = min(min_long_side / long_side, max_long_side / long_side)
+    if scale <= 1.0:
+        return gray, 1.0
+
+    resized = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+    return resized, float(scale)
+
+
+def _normalize_document_background(gray: np.ndarray) -> np.ndarray:
+    """Flatten paper shading and push clean background pixels toward white."""
+    h, w = gray.shape[:2]
+    kernel_side = max(31, (min(h, w) // 24) | 1)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (kernel_side, kernel_side))
+    background = cv2.morphologyEx(gray, cv2.MORPH_CLOSE, kernel)
+    flattened = cv2.divide(gray, background, scale=255)
+    lo, hi = np.percentile(flattened, (1, 99))
+    if hi - lo > 8:
+        flattened = np.clip(
+            (flattened.astype(np.float32) - lo) * (255.0 / (hi - lo)), 0, 255
+        ).astype(np.uint8)
+    return flattened
+
+
+def _clean_background_noise(gray: np.ndarray) -> np.ndarray:
+    cleaned = gray.copy()
+    cleaned[cleaned >= 232] = 255
+
+    ink = cv2.threshold(cleaned, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1]
+    components, labels, stats, _centroids = cv2.connectedComponentsWithStats(ink, 8)
+    speck_mask = np.zeros_like(ink)
+    for i in range(1, components):
+        area = int(stats[i, cv2.CC_STAT_AREA])
+        width = int(stats[i, cv2.CC_STAT_WIDTH])
+        height = int(stats[i, cv2.CC_STAT_HEIGHT])
+        if area <= 10 and width <= 5 and height <= 5:
+            speck_mask[labels == i] = 255
+
+    cleaned[speck_mask > 0] = 255
+    return cleaned
+
+
+def _enhance_document_contrast(gray: np.ndarray) -> np.ndarray:
+    normalized = _normalize_document_background(gray)
+    clahe = cv2.createCLAHE(clipLimit=1.8, tileGridSize=(8, 8))
+    enhanced = clahe.apply(normalized)
+    return _clean_background_noise(enhanced)
+
+
+def _sharpen_document(gray: np.ndarray) -> np.ndarray:
+    blurred = cv2.GaussianBlur(gray, (0, 0), 1.0)
+    sharpened = cv2.addWeighted(gray, 1.55, blurred, -0.55, 0)
+    return np.clip(sharpened, 0, 255).astype(np.uint8)
+
+
 def preprocess_page(
 
     image: np.ndarray,
@@ -446,6 +508,8 @@ def preprocess_page(
     sharpen: bool = True,
 
     contrast: bool = True,
+
+    high_resolution: bool = True,
 
     transform: PreprocessTransform | None = None,
 
@@ -478,18 +542,27 @@ def preprocess_page(
         gray = image.copy()
 
 
+    if high_resolution:
+
+        gray, scale = _ensure_high_resolution(gray)
+
+        if scale != 1.0:
+
+            h, w = gray.shape[:2]
+
+            transform.append_scale(scale, new_w=w, new_h=h)
+
+
 
     if denoise:
 
-        gray = cv2.fastNlMeansDenoising(gray, None, 10, 7, 21)
+        gray = cv2.fastNlMeansDenoising(gray, None, 12, 7, 21)
 
 
 
     if contrast:
 
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-
-        gray = clahe.apply(gray)
+        gray = _enhance_document_contrast(gray)
 
 
 
@@ -521,9 +594,7 @@ def preprocess_page(
 
     if sharpen:
 
-        kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]])
-
-        gray = cv2.filter2D(gray, -1, kernel)
+        gray = _sharpen_document(gray)
 
 
 

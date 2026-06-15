@@ -92,6 +92,11 @@ class PreprocessTransform:
         t = np.array([[1.0, 0.0, dx], [0.0, 1.0, dy], [0.0, 0.0, 1.0]])
         self.matrix = t @ self.matrix
 
+    def append_scale(self, scale: float, *, new_w: int, new_h: int) -> None:
+        s = np.array([[scale, 0.0, 0.0], [0.0, scale, 0.0], [0.0, 0.0, 1.0]])
+        self.matrix = s @ self.matrix
+        self.dst_w, self.dst_h = new_w, new_h
+
     def to_dict(self) -> dict:
         return {
             "src_w": self.src_w,
