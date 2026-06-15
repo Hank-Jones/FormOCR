@@ -139,8 +139,3 @@ First-time `assets/`: `npm run populate:assets` (then `build:installer`).
 - `images/` — uploaded scans
 - `models/` — OCR / LLM assets
 - `logs/`
-"# FormOCR" 
-"# FormOCR" 
-"# io" 
-"# FormOCR" 
-"# FormOCR" 

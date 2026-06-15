@@ -29,7 +29,7 @@ def multiline_ocr_hint(line_count: int) -> str:
 
 
 def multiline_ocr_prompt(*, line_count: int, lang: str, is_date: bool = False) -> str:
-    lang_hint = {"ch": "Chinese", "en": "English"}.get(lang, lang)
+    lang_hint = {"ko": "Korean", "ch": "Chinese", "en": "English"}.get(lang, lang)
     if is_date:
         return (
             f"You read handwritten {lang_hint} dates on a form.\n"

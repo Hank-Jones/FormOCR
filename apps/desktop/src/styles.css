@@ -1896,52 +1896,6 @@ tbody tr:hover td {
   font-size: var(--text-xs);
 }
 
-.export-result-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: var(--space-4);
-}
-
-.export-result-pane {
-  min-height: 0;
-}
-
-.export-result-title {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-}
-
-.export-result-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  margin-bottom: var(--space-3);
-  color: var(--text-secondary);
-  font-size: var(--text-xs);
-}
-
-.export-result-fields {
-  max-height: 360px;
-  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
-}
-
-.export-result-empty {
-  margin: 0;
-  font-size: var(--text-sm);
-}
-
-.export-edit-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-  gap: var(--space-3);
-}
-
-.export-edit-grid .form-group {
-  margin-bottom: 0;
-}
-
 .field-crops-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));

@@ -34,6 +34,11 @@ function writeBadge(n: number) {
   }
 }
 
+function isNotFoundError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return msg.includes("404") || /not found/i.test(msg);
+}
+
 type ActiveJobContextValue = {
   job: Job | null;
   uploading: boolean;
@@ -70,6 +75,19 @@ export function ActiveJobProvider({ children }: { children: ReactNode }) {
       pollRef.current = null;
     }
   }, []);
+
+  const clearActiveJobState = useCallback(() => {
+    stopPolling();
+    setJob(null);
+    setUploading(false);
+    setCancelling(false);
+    jobIdRef.current = null;
+    try {
+      sessionStorage.removeItem(ACTIVE_JOB_KEY);
+    } catch {
+      /* ignore */
+    }
+  }, [stopPolling]);
 
   const bumpBadge = useCallback(() => {
     setBadgeCount((prev) => {
@@ -129,16 +147,19 @@ export function ActiveJobProvider({ children }: { children: ReactNode }) {
             }
             onJobTerminal(j);
           }
-        } catch {
+        } catch (err) {
           stopPolling();
           setUploading(false);
+          if (isNotFoundError(err)) {
+            clearActiveJobState();
+          }
         }
       };
 
       tick();
       pollRef.current = setInterval(tick, 800);
     },
-    [stopPolling, onJobTerminal]
+    [stopPolling, onJobTerminal, clearActiveJobState]
   );
 
   const trackJob = useCallback(
@@ -218,7 +239,11 @@ export function ActiveJobProvider({ children }: { children: ReactNode }) {
           }
         }
       })
-      .catch(() => {});
+      .catch((err) => {
+        if (isNotFoundError(err)) {
+          clearActiveJobState();
+        }
+      });
 
     return () => stopPolling();
     // Resume once on app load.

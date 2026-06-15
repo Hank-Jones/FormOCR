@@ -1,15 +1,58 @@
 import json
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.db.models import Correction, Form, FormType, ProcessingJob, Template, TemplateSample
 from app.db.session import get_db
 from app.schemas.common import FormTypeCreate, FormTypeOut, FormTypeUpdate
+from app.services.file_cleanup import collect_related_image_paths, safe_unlink_paths
 from app.services.field_styles import parse_field_styles
 
 router = APIRouter(prefix="/form-types", tags=["form-types"])
+_MAX_FORM_TYPE_NAME = 128
+
+
+def _json_list(raw: str | None) -> list[str] | None:
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, list):
+        return None
+    return [str(item) for item in parsed]
+
+
+def _json_object(raw: str | None) -> dict:
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _normalize_name(raw: str | None) -> str:
+    name = (raw or "").strip()
+    if not name:
+        raise HTTPException(400, "Name is required")
+    if len(name) > _MAX_FORM_TYPE_NAME:
+        raise HTTPException(400, f"Name must be {_MAX_FORM_TYPE_NAME} characters or fewer")
+    return name
+
+
+def _name_exists(db: Session, name: str, exclude_id: int | None = None) -> bool:
+    q = db.query(FormType).filter(func.lower(func.trim(FormType.name)) == name.lower())
+    if exclude_id is not None:
+        q = q.filter(FormType.id != exclude_id)
+    return q.first() is not None
 
 
 def _form_type_out(ft: FormType) -> FormTypeOut:
@@ -18,7 +61,7 @@ def _form_type_out(ft: FormType) -> FormTypeOut:
         name=ft.name,
         version=ft.version,
         status=ft.status,
-        anchor_keywords=json.loads(ft.anchor_keywords) if ft.anchor_keywords else None,
+        anchor_keywords=_json_list(ft.anchor_keywords),
         field_styles=parse_field_styles(ft.field_styles_json),
         created_at=ft.created_at,
     )
@@ -32,10 +75,10 @@ def list_form_types(db: Session = Depends(get_db)):
 
 @router.post("", response_model=FormTypeOut)
 def create_form_type(body: FormTypeCreate, db: Session = Depends(get_db)):
-    existing = db.query(FormType).filter(FormType.name == body.name).first()
-    if existing:
+    name = _normalize_name(body.name)
+    if _name_exists(db, name):
         raise HTTPException(400, "Form type name already exists")
-    ft = FormType(name=body.name, status="draft")
+    ft = FormType(name=name, status="draft")
     db.add(ft)
     db.commit()
     db.refresh(ft)
@@ -50,15 +93,8 @@ def update_form_type(
     if not ft:
         raise HTTPException(404, "Form type not found")
     if body.name is not None:
-        name = body.name.strip()
-        if not name:
-            raise HTTPException(400, "Name is required")
-        existing = (
-            db.query(FormType)
-            .filter(FormType.name == name, FormType.id != form_type_id)
-            .first()
-        )
-        if existing:
+        name = _normalize_name(body.name)
+        if _name_exists(db, name, exclude_id=form_type_id):
             raise HTTPException(400, "Form type name already exists")
         ft.name = name
     db.commit()
@@ -119,7 +155,7 @@ def list_templates(form_type_id: int, db: Session = Depends(get_db)):
             "id": t.id,
             "version": t.version,
             "published_at": t.published_at.isoformat(),
-            "fields_json": json.loads(t.fields_json),
+            "fields_json": _json_object(t.fields_json),
         }
         for t in templates
     ]
@@ -130,25 +166,71 @@ def delete_form_type(form_type_id: int, db: Session = Depends(get_db)):
     ft = db.query(FormType).filter(FormType.id == form_type_id).first()
     if not ft:
         raise HTTPException(404, "Form type not found")
-
-    form_ids = [
-        f.id for f in db.query(Form.id).filter(Form.form_type_id == form_type_id).all()
-    ]
-    if form_ids:
-        db.query(Correction).filter(Correction.form_id.in_(form_ids)).delete(
-            synchronize_session=False
+    active_jobs = (
+        db.query(ProcessingJob)
+        .filter(
+            ProcessingJob.form_type_id == form_type_id,
+            ProcessingJob.status.in_(("pending", "running")),
         )
-        db.query(Form).filter(Form.id.in_(form_ids)).delete(synchronize_session=False)
+        .count()
+    )
+    if active_jobs:
+        raise HTTPException(409, "Cannot delete form type while jobs are running")
 
-    db.query(TemplateSample).filter(TemplateSample.form_type_id == form_type_id).delete(
-        synchronize_session=False
+    forms = db.query(Form).filter(Form.form_type_id == form_type_id).all()
+    samples = (
+        db.query(TemplateSample)
+        .filter(TemplateSample.form_type_id == form_type_id)
+        .all()
     )
-    db.query(Template).filter(Template.form_type_id == form_type_id).delete(
-        synchronize_session=False
+    images_root = settings.images_dir.resolve()
+    cleanup_paths: set[Path] = set()
+    for form in forms:
+        cleanup_paths.update(collect_related_image_paths(form.raw_image_path, images_root))
+        cleanup_paths.update(collect_related_image_paths(form.processed_image_path, images_root))
+    for sample in samples:
+        cleanup_paths.update(collect_related_image_paths(sample.image_path, images_root))
+        cleanup_paths.update(collect_related_image_paths(sample.processed_path, images_root))
+
+    form_ids = [f.id for f in forms]
+    corrections_deleted = 0
+    if form_ids:
+        corrections_deleted = (
+            db.query(Correction)
+            .filter(Correction.form_id.in_(form_ids))
+            .delete(synchronize_session=False)
+        )
+    forms_deleted = (
+        db.query(Form).filter(Form.id.in_(form_ids)).delete(synchronize_session=False)
+        if form_ids
+        else 0
     )
-    db.query(ProcessingJob).filter(ProcessingJob.form_type_id == form_type_id).update(
-        {ProcessingJob.form_type_id: None}, synchronize_session=False
+
+    samples_deleted = (
+        db.query(TemplateSample)
+        .filter(TemplateSample.form_type_id == form_type_id)
+        .delete(synchronize_session=False)
+    )
+    templates_deleted = (
+        db.query(Template)
+        .filter(Template.form_type_id == form_type_id)
+        .delete(synchronize_session=False)
+    )
+    jobs_deleted = (
+        db.query(ProcessingJob)
+        .filter(ProcessingJob.form_type_id == form_type_id)
+        .delete(synchronize_session=False)
     )
     db.delete(ft)
     db.commit()
-    return {"ok": True, "deleted_id": form_type_id}
+    files_deleted = safe_unlink_paths(cleanup_paths, images_root)
+    return {
+        "ok": True,
+        "deleted_id": form_type_id,
+        "forms_deleted": forms_deleted,
+        "samples_deleted": samples_deleted,
+        "templates_deleted": templates_deleted,
+        "corrections_deleted": corrections_deleted,
+        "jobs_deleted": jobs_deleted,
+        "files_deleted": files_deleted,
+    }

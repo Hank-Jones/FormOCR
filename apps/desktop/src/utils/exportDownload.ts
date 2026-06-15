@@ -44,6 +44,10 @@ function triggerBrowserDownload(blob: Blob, filename: string) {
   }, 150);
 }
 
+function errorDetail(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
 async function fetchExportBlob(
   format: ExportFormat,
   params: URLSearchParams
@@ -54,18 +58,21 @@ async function fetchExportBlob(
   const res = await fetch(`${base}${path}`);
   if (!res.ok) {
     const text = await res.text();
+    let detail = "";
+    try {
+      const parsed = JSON.parse(text) as { detail?: unknown };
+      if (typeof parsed.detail === "string" && parsed.detail.trim()) {
+        detail = parsed.detail;
+      }
+    } catch {
+      // Fall through to the raw response text for non-JSON errors.
+    }
+    if (detail) throw new Error(detail);
     throw new Error(text || `Export failed (${res.status})`);
   }
 
-  if (format === "json") {
-    const data = await res.json();
-    return new Blob([JSON.stringify(data, null, 2)], {
-      type: "application/json;charset=utf-8",
-    });
-  }
-
   const blob = await res.blob();
-  if (blob.size === 0 && format !== "csv") {
+  if (blob.size === 0) {
     throw new Error("No data to export for the current filters.");
   }
   return blob;
@@ -109,19 +116,32 @@ async function saveBlob(
   const defaultFilename = opts?.defaultFilename ?? defaultExportFilename(format);
 
   if (isTauri()) {
-    const dest = await save({
-      title: opts?.title,
-      defaultPath: defaultFilename,
-      filters: formatFilters(format),
-    });
+    let dest: string | null;
+    try {
+      dest = await save({
+        title: opts?.title,
+        defaultPath: defaultFilename,
+        filters: formatFilters(format),
+      });
+    } catch (e) {
+      throw new Error(`Could not open the save dialog. ${errorDetail(e)}`);
+    }
     if (dest === null) {
       return null;
     }
+    const blob = await fetchExportBlob(format, params);
     const bytes = new Uint8Array(await blob.arrayBuffer());
-    await writeFile(dest, bytes);
+    try {
+      await writeFile(dest, bytes);
+    } catch (e) {
+      throw new Error(
+        `Could not save export to the selected location. Choose Documents, Downloads, Desktop, your home folder, or Temp. ${errorDetail(e)}`
+      );
+    }
     return dest;
   }
 
+  const blob = await fetchExportBlob(format, params);
   triggerBrowserDownload(blob, defaultFilename);
   return defaultFilename;
 }

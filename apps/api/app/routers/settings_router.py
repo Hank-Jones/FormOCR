@@ -9,6 +9,7 @@ from app.services.history_clear import CLEAR_HISTORY_FORBIDDEN, clear_processing
 from app.services.ocr import reset_ocr
 
 router = APIRouter(prefix="/settings", tags=["settings"])
+_SUPPORTED_OCR_LANGS = {"ch", "en", "ko"}
 
 
 class SettingsOut(BaseModel):
@@ -46,13 +47,17 @@ def _get_setting(db: Session, key: str, default: str) -> str:
     return row.value if row else default
 
 
+def _get_nonempty_setting(db: Session, key: str, default: str) -> str:
+    value = _get_setting(db, key, default).strip()
+    return value or default
+
+
 def _set_setting(db: Session, key: str, value: str) -> None:
     row = db.query(AppSettings).filter(AppSettings.key == key).first()
     if row:
         row.value = value
     else:
         db.add(AppSettings(key=key, value=value))
-    db.commit()
 
 
 @router.get("", response_model=SettingsOut)
@@ -62,7 +67,9 @@ def get_settings(db: Session = Depends(get_db)):
     hw_enabled = _get_setting(
         db, "handwriting_ocr_enabled", str(settings.handwriting_ocr_enabled)
     )
-    hw_model = _get_setting(db, "handwriting_ocr_model", settings.handwriting_ocr_model)
+    hw_model = _get_nonempty_setting(
+        db, "handwriting_ocr_model", settings.handwriting_ocr_model
+    )
     return SettingsOut(
         ai_correction_enabled=ai.lower() == "true",
         ocr_lang=ocr_lang,
@@ -73,21 +80,39 @@ def get_settings(db: Session = Depends(get_db)):
 
 @router.patch("", response_model=SettingsOut)
 def update_settings(body: SettingsUpdate, db: Session = Depends(get_db)):
+    current = get_settings(db)
+    next_ai = current.ai_correction_enabled
+    next_hw_enabled = current.handwriting_ocr_enabled
+    next_hw_model = current.handwriting_ocr_model
+    next_ocr_lang = current.ocr_lang
+
     if body.ai_correction_enabled is not None:
-        settings.ai_correction_enabled = body.ai_correction_enabled
-        _set_setting(db, "ai_correction_enabled", str(body.ai_correction_enabled))
+        next_ai = body.ai_correction_enabled
     if body.handwriting_ocr_enabled is not None:
-        settings.handwriting_ocr_enabled = body.handwriting_ocr_enabled
-        _set_setting(db, "handwriting_ocr_enabled", str(body.handwriting_ocr_enabled))
+        next_hw_enabled = body.handwriting_ocr_enabled
     if body.handwriting_ocr_model is not None:
-        settings.handwriting_ocr_model = body.handwriting_ocr_model.strip()
-        _set_setting(db, "handwriting_ocr_model", settings.handwriting_ocr_model)
+        next_hw_model = body.handwriting_ocr_model.strip()
+        if not next_hw_model:
+            raise HTTPException(400, "Handwriting OCR model is required")
     if body.ocr_lang is not None:
         lang = body.ocr_lang.strip().lower()
-        if lang in ("ch", "en"):
-            settings.ocr_lang = lang
-            _set_setting(db, "ocr_lang", lang)
-            reset_ocr()
+        if lang not in _SUPPORTED_OCR_LANGS:
+            raise HTTPException(400, "Unsupported OCR language")
+        next_ocr_lang = lang
+
+    ocr_lang_changed = next_ocr_lang != current.ocr_lang
+    _set_setting(db, "ai_correction_enabled", str(next_ai))
+    _set_setting(db, "handwriting_ocr_enabled", str(next_hw_enabled))
+    _set_setting(db, "handwriting_ocr_model", next_hw_model)
+    _set_setting(db, "ocr_lang", next_ocr_lang)
+    db.commit()
+
+    settings.ai_correction_enabled = next_ai
+    settings.handwriting_ocr_enabled = next_hw_enabled
+    settings.handwriting_ocr_model = next_hw_model
+    settings.ocr_lang = next_ocr_lang
+    if ocr_lang_changed:
+        reset_ocr()
     return get_settings(db)
 
 

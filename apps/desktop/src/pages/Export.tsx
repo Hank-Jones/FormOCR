@@ -63,10 +63,10 @@ function buildRows(forms: FormRecord[], typeName: (id: number | null) => string)
       form_id: String(f.id),
       form_type: typeName(f.form_type_id),
       status: f.review_status,
-      created: f.created_at ? new Date(f.created_at).toLocaleDateString() : "—",
+      created: f.created_at || "",
     };
     for (const [k, v] of Object.entries(fields)) {
-      row[k] = v || "—";
+      row[k] = v || "";
     }
     return row;
   });
@@ -394,8 +394,6 @@ export default function ExportPage() {
   const [draggedColumn, setDraggedColumn] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
-  const [savingEdits, setSavingEdits] = useState(false);
-  const [activeTab, setActiveTab] = useState<ExportTab>("preview");
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   const resizingColumnRef = useRef<{
@@ -406,7 +404,7 @@ export default function ExportPage() {
 
   const typeName = useCallback(
     (id: number | null) => {
-      if (!id) return "—";
+      if (!id) return "";
       return formTypes.find((ft) => ft.id === id)?.name ?? `#${id}`;
     },
     [formTypes]
@@ -434,13 +432,13 @@ export default function ExportPage() {
       setForms(list);
       setDeletedFormIds(new Set());
     } catch (e) {
-      setError(String(e));
+      setError(apiErrorMessage(e, t));
       setForms([]);
       setDeletedFormIds(new Set());
     } finally {
       setLoading(false);
     }
-  }, [formTypeId, reviewStatus]);
+  }, [formTypeId, reviewStatus, t]);
 
   useEffect(() => {
     apiFetch<FormType[]>("/form-types").then(setFormTypes).catch(() => {});
@@ -602,6 +600,7 @@ export default function ExportPage() {
   };
 
   const runExport = async () => {
+    if (exporting) return;
     setExporting(true);
     setError("");
     setSuccess("");
@@ -614,7 +613,7 @@ export default function ExportPage() {
       }
       setSuccess(t("export.savedTo", { path: savedPath }));
     } catch (e) {
-      setError(String(e));
+      setError(apiErrorMessage(e, t));
     } finally {
       setExporting(false);
     }
@@ -746,8 +745,11 @@ export default function ExportPage() {
             <span className="muted tab-window-count">
               {t("common.rows", { count: rows.length })}
             </span>
-          </div>
+          </h3>
         </div>
+        <p className="muted" style={{ marginTop: "-0.25rem", fontSize: "0.85rem" }}>
+          {t("export.previewLimit")}
+        </p>
 
         {loading && rows.length === 0 ? (
           <p className="empty-state empty-state--sm">{t("common.loading")}</p>
@@ -837,9 +839,11 @@ export default function ExportPage() {
                     {previewCols.map((col) => (
                       <td key={col} className={fieldCols.includes(col) ? "td-field" : undefined}>
                         {col === "status" ? (
-                          <span className={`status-badge status-${row.status}`}>{row.status}</span>
+                          <span className={`status-badge status-${row.status}`}>
+                            {statusLabel(row.status)}
+                          </span>
                         ) : (
-                          row[col] ?? "—"
+                          row[col] ?? ""
                         )}
                       </td>
                     ))}
