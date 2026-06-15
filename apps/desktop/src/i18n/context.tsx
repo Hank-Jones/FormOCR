@@ -9,21 +9,23 @@ import {
 } from "react";
 
 import en from "./locales/en.json";
+import ko from "./locales/ko.json";
 import zh from "./locales/zh.json";
 
-export type Locale = "en" | "zh";
+export type Locale = "en" | "ko" | "zh";
 
 const STORAGE_KEY = "formocr_ui_locale";
 
 const MESSAGES: Record<Locale, Record<string, string>> = {
   en: en as Record<string, string>,
+  ko: ko as Record<string, string>,
   zh: zh as Record<string, string>,
 };
 
 function readStoredLocale(): Locale {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw === "en" || raw === "zh") return raw;
+    if (raw === "en" || raw === "ko" || raw === "zh") return raw;
   } catch {
     /* ignore */
   }

@@ -288,7 +288,6 @@ export default function ProcessPage() {
     const params = new URLSearchParams();
     params.set("form_type_id", formTypeId);
     params.set("auto_detect", "false");
-    params.set("use_ai", "false");
     try {
       const j = await apiUpload<Job>(`/process/batch?${params}`, fd);
       trackJob(j);

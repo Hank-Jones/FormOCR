@@ -310,11 +310,12 @@ function Sync-FormOcrOllamaModelsToAppData {
     }
 }
 
-# PP-OCRv4 paths required for offline ch + en (must match apps/api/app/services/ocr.py).
+# PP-OCRv4 paths required for offline ch + en + ko (must match apps/api/app/services/ocr.py).
 function Get-FormOcrPaddleRequiredRelPaths {
     $models = @(
         @{ det = "whl\det\ch\ch_PP-OCRv4_det_infer"; rec = "whl\rec\ch\ch_PP-OCRv4_rec_infer" },
-        @{ det = "whl\det\en\en_PP-OCRv3_det_infer"; rec = "whl\rec\en\en_PP-OCRv4_rec_infer" }
+        @{ det = "whl\det\en\en_PP-OCRv3_det_infer"; rec = "whl\rec\en\en_PP-OCRv4_rec_infer" },
+        @{ det = "whl\det\ml\Multilingual_PP-OCRv3_det_infer"; rec = "whl\rec\korean\korean_PP-OCRv4_rec_infer" }
     )
     $paths = @(
         "whl\cls\ch_ppocr_mobile_v2.0_cls_infer\inference.pdmodel",
@@ -355,7 +356,7 @@ function Assert-FormOcrPaddleModelsOffline {
     $sample = ($missing | Select-Object -First 6) -join "`n  "
     $more = if ($missing.Count -gt 6) { "`n  ... and $($missing.Count - 6) more" } else { "" }
     throw @"
-Incomplete $Context for offline OCR (Chinese, English / PP-OCRv4).
+Incomplete $Context for offline OCR (Chinese, English, Korean / PP-OCRv4).
 
 Root: $PaddleRoot
 Missing (sample):
@@ -624,7 +625,7 @@ function Warm-FormOcrAtInstall {
     $env:FORMOCR_OCR_ENGINE = "qwen"
     $env:FORMOCR_HANDWRITING_OCR_ENABLED = "true"
     $env:FORMOCR_HANDWRITING_OCR_MODEL = "qwen2.5vl:3b"
-    $env:FORMOCR_AI_CORRECTION_ENABLED = "false"
+    $env:FORMOCR_AI_CORRECTION_ENABLED = "true"
     $proc = Start-Process -FilePath $apiExe -WorkingDirectory (Split-Path $apiExe) -PassThru -WindowStyle Hidden
     $liveOk = $false
     $deadline = (Get-Date).AddMinutes(3)

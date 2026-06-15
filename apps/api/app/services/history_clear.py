@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db.models import Correction, Form, ProcessingJob
+from app.services.file_cleanup import collect_related_image_paths, safe_unlink_paths
 from app.services.progress import clear_all_job_progress
 
 logger = logging.getLogger("formocr")
@@ -38,43 +39,8 @@ def reconcile_stale_jobs(db: Session) -> int:
     return len(stale)
 
 
-def _safe_unlink(path_str: str | None, images_root: Path) -> bool:
-    if not path_str or not str(path_str).strip():
-        return False
-    try:
-        resolved = Path(path_str).resolve()
-        resolved.relative_to(images_root.resolve())
-    except (ValueError, OSError):
-        logger.warning("Skipped unlink outside images dir: %s", path_str)
-        return False
-    if resolved.is_file():
-        resolved.unlink(missing_ok=True)
-        return True
-    return False
-
-
-def abandon_active_jobs(db: Session) -> int:
-    """Mark all pending/running jobs failed (user confirmed force clear)."""
-    active = (
-        db.query(ProcessingJob)
-        .filter(ProcessingJob.status.in_(("pending", "running")))
-        .all()
-    )
-    now = datetime.utcnow()
-    for job in active:
-        job.status = "failed"
-        job.completed_at = now
-    if active:
-        db.commit()
-        clear_all_job_progress()
-        logger.info("Abandoned %s active jobs for force clear", len(active))
-    return len(active)
-
-
 def clear_processing_history(db: Session, *, force: bool = False) -> dict[str, int]:
-    stale_marked = reconcile_stale_jobs(db)
-    if force:
-        stale_marked += abandon_active_jobs(db)
+    stale_marked = reconcile_stale_jobs(db) if force else 0
     running = (
         db.query(ProcessingJob)
         .filter(ProcessingJob.status.in_(("pending", "running")))
@@ -87,12 +53,10 @@ def clear_processing_history(db: Session, *, force: bool = False) -> dict[str, i
     forms = db.query(Form).all()
     form_ids = [f.id for f in forms]
 
-    files_deleted = 0
+    cleanup_paths: set[Path] = set()
     for form in forms:
-        if _safe_unlink(form.raw_image_path, images_root):
-            files_deleted += 1
-        if _safe_unlink(form.processed_image_path, images_root):
-            files_deleted += 1
+        cleanup_paths.update(collect_related_image_paths(form.raw_image_path, images_root))
+        cleanup_paths.update(collect_related_image_paths(form.processed_image_path, images_root))
 
     corrections_deleted = 0
     if form_ids:
@@ -109,6 +73,7 @@ def clear_processing_history(db: Session, *, force: bool = False) -> dict[str, i
 
     db.commit()
     clear_all_job_progress()
+    files_deleted = safe_unlink_paths(cleanup_paths, images_root)
 
     logger.info(
         "Cleared history: forms=%s jobs=%s corrections=%s files=%s",

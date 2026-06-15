@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     ollama_model: str = "phi3:mini"
     # qwen = vision-only OCR (recommended). hybrid = Paddle + optional Qwen per field.
     ocr_engine: str = "qwen"
-    ai_correction_enabled: bool = False
+    ai_correction_enabled: bool = True
     handwriting_ocr_enabled: bool = True
     handwriting_ocr_model: str = "qwen2.5vl:3b"
     handwriting_ocr_timeout_s: float = 120.0
@@ -32,8 +32,8 @@ class Settings(BaseSettings):
     handwriting_ocr_composite_single_call_max_fields: int = 40
     # Above single-call limit, split into chunks of this many fields per vision call.
     handwriting_ocr_composite_chunk_fields: int = 20
-    # PaddleOCR UI code: ch | en (mapped to paddle lang in ocr.paddle_lang)
-    ocr_lang: str = "ch"
+    # PaddleOCR UI code: ch | en | ko (mapped to paddle lang in ocr.paddle_lang)
+    ocr_lang: str = "ko"
     max_upload_mb: int = 50
     preprocess_auto_orient: bool = True
     # Heuristic orientation (without OSD) can rotate pages incorrectly.

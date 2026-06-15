@@ -15,7 +15,6 @@ from app.services.ai_correct import (
     fields_eligible_for_ai,
     merge_ai_corrections,
 )
-from app.services.ocr import uses_qwen_only
 from app.services.extract import extract_fields_parallel
 from app.services.form_detect import detect_form_type
 from app.services.job_cancel import raise_if_job_cancelled
@@ -247,11 +246,7 @@ async def process_form_image(
 
     corrected = dict(validated)
     ai_error: str | None = None
-    do_ai = (
-        False
-        if uses_qwen_only()
-        else (use_ai if use_ai is not None else settings.ai_correction_enabled)
-    )
+    do_ai = use_ai if use_ai is not None else settings.ai_correction_enabled
     ai_model = settings.ollama_model
 
     if do_ai:

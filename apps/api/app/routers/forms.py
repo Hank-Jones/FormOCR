@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, Response
@@ -13,6 +14,29 @@ from app.services.pipeline import get_latest_template, process_form_image, raste
 from app.services.template_learn import template_from_json
 
 router = APIRouter(prefix="/forms", tags=["forms"])
+
+
+def _json_dict(raw: str | None) -> dict[str, Any] | None:
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _confidence_dict(raw: str | None) -> dict[str, float] | None:
+    parsed = _json_dict(raw)
+    if parsed is None:
+        return None
+    out: dict[str, float] = {}
+    for key, value in parsed.items():
+        try:
+            out[str(key)] = float(value)
+        except (TypeError, ValueError):
+            continue
+    return out
 
 
 def _template_fields_for_form(db: Session, form: Form) -> list[FormFieldMeta]:
@@ -41,10 +65,10 @@ def _form_to_out(form: Form) -> FormOut:
         job_id=form.job_id,
         raw_image_path=form.raw_image_path,
         processed_image_path=form.processed_image_path,
-        extracted=json.loads(form.extracted_json) if form.extracted_json else None,
-        validated=json.loads(form.validated_json) if form.validated_json else None,
-        corrected=json.loads(form.corrected_json) if form.corrected_json else None,
-        confidence=json.loads(form.confidence_json) if form.confidence_json else None,
+        extracted=_json_dict(form.extracted_json),
+        validated=_json_dict(form.validated_json),
+        corrected=_json_dict(form.corrected_json),
+        confidence=_confidence_dict(form.confidence_json),
         review_status=form.review_status,
         detection_score=form.detection_score,
         created_at=form.created_at,

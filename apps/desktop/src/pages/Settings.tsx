@@ -1,11 +1,13 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import PageHeader from "../components/PageHeader";
 import { apiFetch } from "../api/client";
 import { usePendingReview } from "../context/PendingReviewContext";
 import { useI18n, type Locale } from "../i18n/context";
 
 interface Settings {
+  ai_correction_enabled: boolean;
   ocr_lang: string;
+  handwriting_ocr_enabled: boolean;
   handwriting_ocr_model: string;
 }
 
@@ -17,12 +19,43 @@ type ClearHistoryResult = {
   stale_jobs_marked?: number;
 };
 
+const HIDDEN_OCR_SETTINGS = {
+  ai_correction_enabled: true,
+  handwriting_ocr_enabled: true,
+  handwriting_ocr_model: "qwen2.5vl:3b",
+} satisfies Pick<
+  Settings,
+  "ai_correction_enabled" | "handwriting_ocr_enabled" | "handwriting_ocr_model"
+>;
+
+function apiErrorMessage(e: unknown, t: (key: string, params?: Record<string, string | number>) => string): string {
+  const raw = String(e).replace(/^Error:\s*/, "");
+  let detail = raw;
+  try {
+    const parsed = JSON.parse(raw) as { detail?: unknown };
+    if (typeof parsed.detail === "string") detail = parsed.detail;
+  } catch {
+    // Keep raw text for non-JSON responses.
+  }
+  if (detail.includes("Handwriting OCR model is required")) {
+    return t("settings.errorModelRequired");
+  }
+  if (detail.includes("Unsupported OCR language")) {
+    return t("settings.errorUnsupportedOcrLang");
+  }
+  return detail;
+}
+
 export default function SettingsPage() {
   const { t, locale, setLocale } = useI18n();
   const { refresh: refreshPendingCount } = usePendingReview();
-  const KO_DEFAULT_HW_MODEL = "qwen2.5vl:3b";
-  const [ocrLang, setOcrLang] = useState("ch");
+  const [ocrLang, setOcrLang] = useState("");
+  const [savedSettings, setSavedSettings] = useState<Settings | null>(null);
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const [settingsLoading, setSettingsLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [saveError, setSaveError] = useState("");
   const [clearing, setClearing] = useState(false);
   const [clearMessage, setClearMessage] = useState("");
   const [clearError, setClearError] = useState("");
@@ -30,31 +63,66 @@ export default function SettingsPage() {
   const [forceClear, setForceClear] = useState(false);
 
   useEffect(() => {
-    apiFetch<Settings>("/settings").then((s) => {
-      setOcrLang(s.ocr_lang || "ch");
-    });
+    apiFetch<Settings>("/settings")
+      .then((s) => {
+        setOcrLang(s.ocr_lang);
+        setSavedSettings({ ...s, ...HIDDEN_OCR_SETTINGS });
+        setSettingsLoaded(true);
+      })
+      .catch((e) => {
+        setSaveError(String(e).replace(/^Error:\s*/, ""));
+      })
+      .finally(() => {
+        setSettingsLoading(false);
+      });
   }, []);
 
+  const currentSettings = useMemo<Settings>(
+    () => ({
+      ai_correction_enabled: HIDDEN_OCR_SETTINGS.ai_correction_enabled,
+      ocr_lang: ocrLang,
+      handwriting_ocr_enabled: HIDDEN_OCR_SETTINGS.handwriting_ocr_enabled,
+      handwriting_ocr_model: HIDDEN_OCR_SETTINGS.handwriting_ocr_model,
+    }),
+    [ocrLang]
+  );
+
+  const hasUnsavedChanges =
+    settingsLoaded &&
+    savedSettings !== null &&
+    currentSettings.ocr_lang !== savedSettings.ocr_lang;
+
   const save = async () => {
-    await apiFetch<Settings>("/settings", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        ai_correction_enabled: false,
-        ocr_lang: ocrLang,
-        handwriting_ocr_enabled: true,
-        handwriting_ocr_model: KO_DEFAULT_HW_MODEL,
-      }),
-    });
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
+    if (!settingsLoaded || saving) return;
+    if (!currentSettings.handwriting_ocr_model) {
+      setSaveError(t("settings.errorModelRequired"));
+      setSaved(false);
+      return;
+    }
+    setSaveError("");
+    setSaved(false);
+    setSaving(true);
+    try {
+      const updated = await apiFetch<Settings>("/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(currentSettings),
+      });
+      setOcrLang(updated.ocr_lang);
+      setSavedSettings({ ...updated, ...HIDDEN_OCR_SETTINGS });
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (e) {
+      setSaveError(apiErrorMessage(e, t));
+    } finally {
+      setSaving(false);
+    }
   };
 
   const runClearHistory = async (force: boolean) => {
     setClearing(true);
     setClearMessage("");
     setClearError("");
-    setConfirmClear(false);
     try {
       const result = await apiFetch<ClearHistoryResult>("/settings/clear-history", {
         method: "POST",
@@ -69,15 +137,23 @@ export default function SettingsPage() {
         t("settings.clearHistoryDone", {
           forms: result.forms_deleted,
           jobs: result.jobs_deleted,
-        }) + extra
+        }) +
+          " " +
+          t("settings.clearHistoryDetails", {
+            files: result.files_deleted,
+            corrections: result.corrections_deleted,
+          }) +
+          extra
       );
       refreshPendingCount();
       setForceClear(false);
+      setConfirmClear(false);
     } catch (e) {
       const msg = String(e);
       if (msg.includes("still running") || msg.includes("409")) {
         setClearError(t("settings.clearHistoryRunning"));
         setForceClear(true);
+        setConfirmClear(true);
       } else {
         setClearError(msg);
         setForceClear(false);
@@ -91,28 +167,53 @@ export default function SettingsPage() {
     <div className="page page--pro">
       <PageHeader title={t("page.settings")} />
       <div className="card card--compact">
+        {settingsLoading && (
+          <p className="muted" style={{ marginTop: 0 }}>
+            {t("common.loading")}
+          </p>
+        )}
         <div className="form-group">
           <label>{t("settings.uiLanguage")}</label>
           <select value={locale} onChange={(e) => setLocale(e.target.value as Locale)}>
             <option value="en">{t("settings.lang.en")}</option>
+            <option value="ko">{t("settings.lang.ko")}</option>
             <option value="zh">{t("settings.lang.zh")}</option>
           </select>
         </div>
 
         <div className="form-group">
           <label>{t("settings.ocrLanguage")}</label>
-          <select value={ocrLang} onChange={(e) => setOcrLang(e.target.value)}>
+          <select
+            value={ocrLang}
+            onChange={(e) => setOcrLang(e.target.value)}
+            disabled={!settingsLoaded}
+          >
+            <option value="" disabled>
+              {t("common.loading")}
+            </option>
             <option value="en">{t("settings.ocrLang.en")}</option>
             <option value="ch">{t("settings.ocrLang.ch")}</option>
+            <option value="ko">{t("settings.ocrLang.ko")}</option>
           </select>
         </div>
 
         <div className="toolbar toolbar--tight" style={{ marginTop: "0.75rem" }}>
-          <button type="button" className="btn" onClick={save}>
-            {t("common.save")}
+          <button
+            type="button"
+            className="btn"
+            onClick={save}
+            disabled={!settingsLoaded || saving || !hasUnsavedChanges}
+          >
+            {saving ? t("common.saving") : t("common.save")}
           </button>
+          {hasUnsavedChanges && !saving && <span className="muted">{t("settings.unsavedChanges")}</span>}
           {saved && <span className="muted">{t("common.saved")}</span>}
         </div>
+        {saveError && (
+          <p className="alert alert-error" style={{ marginTop: "0.75rem" }}>
+            {saveError}
+          </p>
+        )}
       </div>
 
       <div className="card card--compact settings-danger-zone">
