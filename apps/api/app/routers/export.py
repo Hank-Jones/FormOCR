@@ -1,59 +1,84 @@
 import csv
-import json
 import io
+import json
+import tempfile
+from collections.abc import Iterable, Iterator
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query
-from fastapi.responses import Response, StreamingResponse
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from openpyxl import Workbook
+from sqlalchemy.orm import joinedload
 from sqlalchemy.orm import Session
 
 from app.db.models import Form
-from app.db.session import get_db
+from app.db.session import SessionLocal, get_db
 
 router = APIRouter(prefix="/export", tags=["export"])
+_META_KEYS = ["form_id", "form_type", "status", "created"]
+_EXPORT_STATUSES = {
+    "pending",
+    "approved",
+    "rejected",
+    "processing",
+    "needs_type",
+    "no_template",
+    "cancelled",
+}
 
 
-def _query_forms(
+def _forms_query(
     db: Session,
     form_type_id: int | None,
     review_status: str | None,
     since: datetime | None,
-) -> list[Form]:
-    q = db.query(Form).order_by(Form.created_at.desc())
+):
+    q = db.query(Form).options(joinedload(Form.form_type)).order_by(Form.created_at.desc())
     if form_type_id:
         q = q.filter(Form.form_type_id == form_type_id)
     if review_status:
-        q = q.filter(Form.review_status == review_status)
+        status = review_status.strip().lower()
+        if status not in _EXPORT_STATUSES:
+            raise HTTPException(400, "Unsupported review status")
+        q = q.filter(Form.review_status == status)
     if since:
         q = q.filter(Form.created_at >= since)
-    return q.all()
+    return q
 
 
-def _loads_obj(raw: str | None) -> dict[str, Any]:
+def _json_object(raw: str | None) -> dict[str, Any]:
     if not raw:
         return {}
-    data = json.loads(raw)
-    return data if isinstance(data, dict) else {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
-def _display_fields(form: Form) -> dict[str, str]:
-    corrected = _loads_obj(form.corrected_json)
-    validated = _loads_obj(form.validated_json)
-    extracted = _loads_obj(form.extracted_json)
-    keys = list(dict.fromkeys([*corrected.keys(), *validated.keys(), *extracted.keys()]))
-    out: dict[str, str] = {}
-    for key in keys:
+def _stringify_value(value: Any) -> Any:
+    if isinstance(value, dict | list):
+        return json.dumps(value, ensure_ascii=False)
+    return value
+
+
+def _display_fields(form: Form) -> dict[str, Any]:
+    corrected = _json_object(form.corrected_json)
+    validated = _json_object(form.validated_json)
+    extracted = _json_object(form.extracted_json)
+    keys = set(corrected) | set(validated) | set(extracted)
+    out: dict[str, Any] = {}
+    for key in sorted(keys):
         corrected_value = corrected.get(key)
         validated_value = validated.get(key)
         extracted_value = extracted.get(key)
-        if corrected_value not in (None, ""):
-            out[key] = str(corrected_value)
-        elif validated_value not in (None, ""):
-            out[key] = str(validated_value)
-        elif isinstance(extracted_value, dict) and extracted_value.get("text") not in (None, ""):
-            out[key] = str(extracted_value["text"])
+        if corrected_value is not None and corrected_value != "":
+            out[key] = _stringify_value(corrected_value)
+        elif validated_value is not None and validated_value != "":
+            out[key] = _stringify_value(validated_value)
+        elif isinstance(extracted_value, dict) and "text" in extracted_value:
+            out[key] = _stringify_value(extracted_value.get("text", ""))
     return out
 
 
@@ -62,61 +87,110 @@ def _row_data(form: Form) -> dict[str, Any]:
         "form_id": form.id,
         "form_type": form.form_type.name if form.form_type else "",
         "status": form.review_status,
-        "created": form.created_at.date().isoformat(),
+        "created": form.created_at.isoformat(),
         **_display_fields(form),
     }
 
 
-def _parse_columns(columns: str | None) -> list[str]:
-    if not columns:
-        return []
-    return [col.strip() for col in columns.split(",") if col.strip()]
+def _iter_rows(forms: Iterable[Form]) -> Iterator[dict[str, Any]]:
+    for form in forms:
+        yield _row_data(form)
 
 
-def _columns(rows: list[dict[str, Any]], columns: str | None = None) -> list[str]:
-    requested = _parse_columns(columns)
-    keys: list[str] = []
-    for key in requested:
-        if any(key in row for row in rows) and key not in keys:
-            keys.append(key)
+def _query_rows(
+    db: Session,
+    form_type_id: int | None,
+    review_status: str | None,
+) -> Iterator[dict[str, Any]]:
+    forms = _forms_query(db, form_type_id, review_status, None).yield_per(200)
+    yield from _iter_rows(forms)
+
+
+def _ordered_keys_and_count(rows: Iterable[dict[str, Any]]) -> tuple[list[str], int]:
+    field_keys: set[str] = set()
+    count = 0
     for row in rows:
+        count += 1
         for key in row:
-            if key not in keys:
-                keys.append(key)
-    return keys
+            if key not in _META_KEYS:
+                field_keys.add(key)
+    return [*_META_KEYS, *sorted(field_keys)], count
+
+
+def _spreadsheet_value(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    stripped = value.lstrip()
+    if stripped and stripped[0] in ("=", "+", "-", "@"):
+        return f"'{value}"
+    return value
+
+
+def _stream_query_rows(
+    form_type_id: int | None,
+    review_status: str | None,
+) -> Iterator[dict[str, Any]]:
+    db = SessionLocal()
+    try:
+        yield from _query_rows(db, form_type_id, review_status)
+    finally:
+        db.close()
+
+
+def _stream_csv(rows: Iterable[dict[str, Any]], keys: list[str]) -> Iterator[str]:
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=keys)
+    writer.writerow({key: _spreadsheet_value(key) for key in keys})
+    yield buf.getvalue()
+    buf.seek(0)
+    buf.truncate(0)
+
+    for row in rows:
+        writer.writerow({key: _spreadsheet_value(row.get(key, "")) for key in keys})
+        yield buf.getvalue()
+        buf.seek(0)
+        buf.truncate(0)
+
+
+def _stream_json(rows: Iterable[dict[str, Any]]) -> Iterator[str]:
+    yield "["
+    first = True
+    for row in rows:
+        if first:
+            first = False
+        else:
+            yield ","
+        yield json.dumps(row, ensure_ascii=False)
+    yield "]"
 
 
 @router.get("/json")
 def export_json(
     form_type_id: int | None = None,
     review_status: str | None = Query(None),
-    columns: str | None = Query(None),
     db: Session = Depends(get_db),
 ):
-    forms = _query_forms(db, form_type_id, review_status, None)
-    rows = [_row_data(f) for f in forms]
-    keys = _columns(rows, columns)
-    return [{key: row.get(key, "") for key in keys} for row in rows]
+    _keys, count = _ordered_keys_and_count(_query_rows(db, form_type_id, review_status))
+    if count == 0:
+        raise HTTPException(404, "No data to export for the current filters")
+    return StreamingResponse(
+        _stream_json(_stream_query_rows(form_type_id, review_status)),
+        media_type="application/json",
+        headers={"Content-Disposition": "attachment; filename=formocr_export.json"},
+    )
 
 
 @router.get("/csv")
 def export_csv(
     form_type_id: int | None = None,
     review_status: str | None = None,
-    columns: str | None = Query(None),
     db: Session = Depends(get_db),
 ):
-    forms = _query_forms(db, form_type_id, review_status, None)
-    rows = [_row_data(f) for f in forms]
-    if not rows:
-        return Response(content="", media_type="text/csv")
-    keys = _columns(rows, columns)
-    buf = io.StringIO()
-    writer = csv.DictWriter(buf, fieldnames=keys)
-    writer.writeheader()
-    writer.writerows(rows)
-    return Response(
-        content=buf.getvalue(),
+    keys, count = _ordered_keys_and_count(_query_rows(db, form_type_id, review_status))
+    if count == 0:
+        raise HTTPException(404, "No data to export for the current filters")
+    return StreamingResponse(
+        _stream_csv(_stream_query_rows(form_type_id, review_status), keys),
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=formocr_export.csv"},
     )
@@ -126,20 +200,17 @@ def export_csv(
 def export_xlsx(
     form_type_id: int | None = None,
     review_status: str | None = None,
-    columns: str | None = Query(None),
     db: Session = Depends(get_db),
 ):
-    forms = _query_forms(db, form_type_id, review_status, None)
-    rows = [_row_data(f) for f in forms]
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Export"
-    if rows:
-        keys = _columns(rows, columns)
-        ws.append(keys)
-        for r in rows:
-            ws.append([r.get(k, "") for k in keys])
-    buf = io.BytesIO()
+    keys, count = _ordered_keys_and_count(_query_rows(db, form_type_id, review_status))
+    if count == 0:
+        raise HTTPException(404, "No data to export for the current filters")
+    wb = Workbook(write_only=True)
+    ws = wb.create_sheet("Export")
+    ws.append([_spreadsheet_value(k) for k in keys])
+    for row in _query_rows(db, form_type_id, review_status):
+        ws.append([_spreadsheet_value(row.get(k, "")) for k in keys])
+    buf = tempfile.SpooledTemporaryFile(max_size=10 * 1024 * 1024)
     wb.save(buf)
     buf.seek(0)
     return StreamingResponse(

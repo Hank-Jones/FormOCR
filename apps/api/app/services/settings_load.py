@@ -18,7 +18,7 @@ def apply_db_settings(db: Session) -> None:
     by_key = {r.key: r.value for r in rows}
     if "ocr_lang" in by_key:
         lang = by_key["ocr_lang"].strip().lower()
-        if lang in ("ch", "en"):
+        if lang in ("ch", "en", "ko"):
             settings.ocr_lang = lang
     if "handwriting_ocr_enabled" in by_key:
         settings.handwriting_ocr_enabled = _bool_val(by_key["handwriting_ocr_enabled"])
@@ -41,5 +41,3 @@ def apply_db_settings(db: Session) -> None:
         m = by_key["ollama_model"].strip()
         if m:
             settings.ollama_model = m
-    if uses_qwen_only():
-        settings.ai_correction_enabled = False

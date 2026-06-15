@@ -23,7 +23,7 @@ $env:FORMOCR_OLLAMA_HOST = "http://127.0.0.1:11435"
 $env:FORMOCR_OCR_ENGINE = "qwen"
 $env:FORMOCR_HANDWRITING_OCR_ENABLED = "true"
 $env:FORMOCR_HANDWRITING_OCR_MODEL = "qwen2.5vl:3b"
-$env:FORMOCR_AI_CORRECTION_ENABLED = "false"
+$env:FORMOCR_AI_CORRECTION_ENABLED = "true"
 
 New-Item -ItemType Directory -Path $env:FORMOCR_DATA_DIR -Force | Out-Null
 
@@ -51,7 +51,7 @@ $apiJob = Start-Job -ScriptBlock {
     $env:FORMOCR_OCR_ENGINE = "qwen"
     $env:FORMOCR_HANDWRITING_OCR_ENABLED = "true"
     $env:FORMOCR_HANDWRITING_OCR_MODEL = "qwen2.5vl:3b"
-    $env:FORMOCR_AI_CORRECTION_ENABLED = "false"
+    $env:FORMOCR_AI_CORRECTION_ENABLED = "true"
 
     & $Python -m uvicorn app.main:app --host 127.0.0.1 --port 8765
 

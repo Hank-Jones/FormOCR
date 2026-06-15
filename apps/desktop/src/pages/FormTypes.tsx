@@ -1,8 +1,31 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import PageHeader from "../components/PageHeader";
 import { apiFetch, type FormType } from "../api/client";
 import { useI18n } from "../i18n/context";
+
+const MAX_FORM_TYPE_NAME = 128;
+
+function apiErrorMessage(e: unknown, t: (key: string, params?: Record<string, string | number>) => string): string {
+  const raw = String(e).replace(/^Error:\s*/, "");
+  let detail = raw;
+  try {
+    const parsed = JSON.parse(raw) as { detail?: unknown };
+    if (typeof parsed.detail === "string") {
+      detail = parsed.detail;
+    }
+  } catch {
+    // Keep the original message for non-JSON API errors.
+  }
+
+  if (detail.includes("Name is required")) return t("formTypes.errorNameRequired");
+  if (detail.includes("128 characters")) return t("formTypes.errorNameTooLong", { max: MAX_FORM_TYPE_NAME });
+  if (detail.includes("Form type name already exists")) return t("formTypes.errorDuplicateName");
+  if (detail.includes("Cannot delete form type while jobs are running")) {
+    return t("formTypes.errorDeleteRunning");
+  }
+  return detail;
+}
 
 function FormTypeNameCell({
   ft,
@@ -16,15 +39,26 @@ function FormTypeNameCell({
   const { t } = useI18n();
   const [value, setValue] = useState(ft.name);
   const [saving, setSaving] = useState(false);
+  const skipBlurCommit = useRef(false);
 
   useEffect(() => {
     setValue(ft.name);
   }, [ft.name]);
 
   const commit = async () => {
+    if (skipBlurCommit.current) {
+      skipBlurCommit.current = false;
+      return;
+    }
     const trimmed = value.trim();
     if (!trimmed) {
       setValue(ft.name);
+      onError(t("formTypes.errorNameRequired"));
+      return;
+    }
+    if (trimmed.length > MAX_FORM_TYPE_NAME) {
+      setValue(ft.name);
+      onError(t("formTypes.errorNameTooLong", { max: MAX_FORM_TYPE_NAME }));
       return;
     }
     if (trimmed === ft.name) return;
@@ -36,32 +70,38 @@ function FormTypeNameCell({
         body: JSON.stringify({ name: trimmed }),
       });
       onRenamed(updated);
+      onError("");
     } catch (e) {
       setValue(ft.name);
-      onError(String(e));
+      onError(apiErrorMessage(e, t));
     } finally {
       setSaving(false);
     }
   };
 
   return (
-    <input
-      className="inline-edit"
-      value={value}
-      disabled={saving}
-      aria-label={t("formTypes.editName")}
-      onChange={(e) => setValue(e.target.value)}
-      onBlur={() => void commit()}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") {
-          e.currentTarget.blur();
-        }
-        if (e.key === "Escape") {
-          setValue(ft.name);
-          e.currentTarget.blur();
-        }
-      }}
-    />
+    <>
+      <input
+        className="inline-edit"
+        value={value}
+        disabled={saving}
+        aria-label={t("formTypes.editName")}
+        maxLength={MAX_FORM_TYPE_NAME}
+        onChange={(e) => setValue(e.target.value)}
+        onBlur={() => void commit()}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.currentTarget.blur();
+          }
+          if (e.key === "Escape") {
+            skipBlurCommit.current = true;
+            setValue(ft.name);
+            e.currentTarget.blur();
+          }
+        }}
+      />
+      {saving && <span className="muted" style={{ marginLeft: "0.5rem" }}>{t("common.saving")}</span>}
+    </>
   );
 }
 
@@ -71,6 +111,8 @@ export default function FormTypesPage() {
   const [types, setTypes] = useState<FormType[]>([]);
   const [name, setName] = useState("");
   const [error, setError] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [deletingId, setDeletingId] = useState<number | null>(null);
 
   const load = async (): Promise<boolean> => {
     try {
@@ -101,20 +143,32 @@ export default function FormTypesPage() {
   }, []);
 
   const create = async () => {
-    if (!name.trim()) return;
+    const trimmed = name.trim();
+    if (!trimmed) {
+      setError(t("formTypes.errorNameRequired"));
+      return;
+    }
+    if (trimmed.length > MAX_FORM_TYPE_NAME) {
+      setError(t("formTypes.errorNameTooLong", { max: MAX_FORM_TYPE_NAME }));
+      return;
+    }
+    if (creating) return;
     setError("");
+    setCreating(true);
     try {
       const ft = await apiFetch<FormType>("/form-types", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: name.trim() }),
+        body: JSON.stringify({ name: trimmed }),
       });
       setName("");
       sessionStorage.setItem("formocr_select_form_type", String(ft.id));
       await load();
       navigate(`/templates/${ft.id}`);
     } catch (e) {
-      setError(String(e));
+      setError(apiErrorMessage(e, t));
+    } finally {
+      setCreating(false);
     }
   };
 
@@ -122,12 +176,16 @@ export default function FormTypesPage() {
     if (!confirm(t("formTypes.deleteConfirm", { name: ft.name }))) {
       return;
     }
+    if (deletingId !== null) return;
     setError("");
+    setDeletingId(ft.id);
     try {
       await apiFetch(`/form-types/${ft.id}`, { method: "DELETE" });
-      load();
+      await load();
     } catch (e) {
-      setError(String(e));
+      setError(apiErrorMessage(e, t));
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -143,14 +201,16 @@ export default function FormTypesPage() {
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder={t("formTypes.placeholder")}
+            maxLength={MAX_FORM_TYPE_NAME}
+            disabled={creating}
             onKeyDown={(e) => {
               if (e.key === "Enter") create();
             }}
           />
         </div>
         {error && <div className="alert alert-error">{error}</div>}
-        <button type="button" className="btn" onClick={create}>
-          {t("formTypes.createOpen")}
+        <button type="button" className="btn" onClick={create} disabled={creating}>
+          {creating ? t("common.saving") : t("formTypes.createOpen")}
         </button>
       </div>
 
@@ -202,9 +262,10 @@ export default function FormTypesPage() {
                         <button
                           type="button"
                           className="btn btn-sm btn-danger"
+                          disabled={deletingId === ft.id}
                           onClick={() => remove(ft)}
                         >
-                          {t("common.delete")}
+                          {deletingId === ft.id ? t("common.loading") : t("common.delete")}
                         </button>
                       </div>
                     </td>

@@ -11,7 +11,7 @@ Offline Windows desktop app for no-code form recognition: visual template learni
 - **DB:** SQLite (`%LOCALAPPDATA%/FormOCR`)
 
 ## Prerequisites
-########
+
 - Node.js 20+
 - Rust (for Tauri)
 - Python 3.11+
@@ -139,8 +139,3 @@ First-time `assets/`: `npm run populate:assets` (then `build:installer`).
 - `images/` — uploaded scans
 - `models/` — OCR / LLM assets
 - `logs/`
-"# FormOCR" 
-"# FormOCR" 
-"# io" 
-"# FormOCR" 
-"# FormOCR" 
